@@ -1,5 +1,7 @@
 /// <reference types="vite/client" />
 
+declare const __APP_VERSION__: string | undefined
+
 declare namespace JSX {
   interface IntrinsicElements {
     webview: React.DetailedHTMLProps<React.HTMLAttributes<HTMLElement>, HTMLElement> & {

@@ -15,4 +15,24 @@ contextBridge.exposeInMainWorld('unichat', {
     ipcRenderer.on('service:select', listener)
     return () => ipcRenderer.removeListener('service:select', listener)
   },
+
+  registerAccounts: (ids: string[]) => {
+    ipcRenderer.send('accounts:register', ids)
+  },
+
+  onUpdateStatus: (callback: (event: string, payload?: string) => void) => {
+    const handlers: Array<[string, (...args: unknown[]) => void]> = [
+      ['update:checking',     () => callback('checking')],
+      ['update:available',    (_e: unknown, v: unknown) => callback('available', String(v))],
+      ['update:not-available',() => callback('not-available')],
+      ['update:progress',     (_e: unknown, p: unknown) => callback('progress', String(p))],
+      ['update:ready',        (_e: unknown, v: unknown) => callback('ready', String(v))],
+    ]
+    handlers.forEach(([ch, fn]) => ipcRenderer.on(ch, fn))
+    return () => handlers.forEach(([ch, fn]) => ipcRenderer.removeListener(ch, fn))
+  },
+
+  installUpdate: () => {
+    ipcRenderer.send('update:install')
+  },
 })

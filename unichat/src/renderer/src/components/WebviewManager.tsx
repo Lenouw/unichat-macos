@@ -1,12 +1,11 @@
 import { useEffect, useRef } from 'react'
-import { SERVICES } from '../config/services'
+import { Account } from '../config/accounts'
 import { parseBadgeFromTitle } from './badge'
 
 const CHROME_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 
-// Injection JS pour extraire le nom du premier contact dans la liste de conversations
-// Fonctionne pour WhatsApp Web, Messenger et Teams via des sélecteurs différents
+// Extraction du premier contact dans la liste de conversations
 const SENDER_EXTRACTOR = `
 (function() {
   try {
@@ -14,7 +13,10 @@ const SENDER_EXTRACTOR = `
       document.querySelector('[data-testid="cell-frame-title"]') ||
       document.querySelector('a[href*="/t/"] span[dir="auto"]') ||
       document.querySelector('[data-tid="chat-list-item"] span') ||
-      document.querySelector('.fui-ChatListItem__displayName');
+      document.querySelector('.fui-ChatListItem__displayName') ||
+      document.querySelector('.ListItem-button.active .info .title') ||
+      document.querySelector('[class*="channelName-"]') ||
+      document.querySelector('[data-qa="channel_sidebar_name_button"]');
     if (el) {
       var txt = (el.getAttribute('title') || el.textContent || '').trim();
       return txt.slice(0, 40);
@@ -24,13 +26,40 @@ const SENDER_EXTRACTOR = `
 })()
 `
 
+// Patche window.Notification pour stocker les notifs dans une queue
+// lisible par le parent via executeJavaScript (postMessage ne traverse pas les webviews Electron)
+const NOTIF_PATCHER = `
+(function() {
+  if (window.__unichatNotifPatched) return;
+  window.__unichatNotifPatched = true;
+  window.__unichatNotifQueue = [];
+  const _Original = window.Notification;
+  window.Notification = function(title, options) {
+    try {
+      window.__unichatNotifQueue.push({
+        title: String(title).slice(0, 100),
+        body: String(options && options.body ? options.body : '').slice(0, 300)
+      });
+    } catch(e) {}
+    return new _Original(title, options);
+  };
+  window.Notification.permission = 'granted';
+  window.Notification.requestPermission = function() { return Promise.resolve('granted'); };
+  Object.defineProperty(window.Notification, 'permission', { get: function() { return 'granted'; } });
+})();
+`
+
+// Draine la queue de notifications accumulées dans la webview
+const NOTIF_DRAIN = `(window.__unichatNotifQueue || []).splice(0)`
+
 interface WebviewManagerProps {
+  accounts: Account[]
   activeId: string
   onBadgeChange: (serviceId: string, count: number) => void
   onSenderChange: (serviceId: string, sender: string) => void
 }
 
-export function WebviewManager({ activeId, onBadgeChange, onSenderChange }: WebviewManagerProps) {
+export function WebviewManager({ accounts, activeId, onBadgeChange, onSenderChange }: WebviewManagerProps) {
   const loadedRef = useRef<Set<string>>(new Set([activeId]))
 
   useEffect(() => {
@@ -39,18 +68,18 @@ export function WebviewManager({ activeId, onBadgeChange, onSenderChange }: Webv
 
   return (
     <div style={{ flex: 1, position: 'relative' }}>
-      {SERVICES.map((service) => {
-        const shouldRender = loadedRef.current.has(service.id)
-        const isActive = service.id === activeId
+      {accounts.map((account) => {
+        const shouldRender = loadedRef.current.has(account.id)
+        const isActive = account.id === activeId
 
         if (!shouldRender) return null
 
         return (
           <WebviewPane
-            key={service.id}
-            serviceId={service.id}
-            url={service.url}
-            partition={service.partition}
+            key={account.id}
+            serviceId={account.id}
+            url={account.url}
+            partition={account.partition}
             visible={isActive}
             onBadgeChange={onBadgeChange}
             onSenderChange={onSenderChange}
@@ -78,62 +107,57 @@ function WebviewPane({ serviceId, url, partition, visible, onBadgeChange, onSend
     const webview = webviewRef.current
     if (!webview) return
 
-    const handleDidFinishLoad = () => {
+    const startPolling = () => {
       if (pollRef.current) clearInterval(pollRef.current)
+
       pollRef.current = setInterval(async () => {
         // Badge via titre de page
-        const title = webview.getTitle()
-        const count = parseBadgeFromTitle(title)
-        onBadgeChange(serviceId, count)
+        try {
+          const title = webview.getTitle()
+          const count = parseBadgeFromTitle(title)
+          onBadgeChange(serviceId, count)
+        } catch { /* webview pas prête */ }
 
-        // Dernier contact via injection DOM (toutes les 4s pour ne pas surcharger)
+        // Dernier contact via injection DOM
         try {
           const sender = await webview.executeJavaScript(SENDER_EXTRACTOR)
           if (typeof sender === 'string' && sender.length > 0) {
             onSenderChange(serviceId, sender)
           }
-        } catch {
-          // Silencieux — la webview n'est peut-être pas encore prête
-        }
+        } catch { /* silencieux */ }
+
+        // Notifications : drainer la queue accumulée dans la webview
+        // (postMessage webview→parent ne fonctionne pas dans Electron)
+        try {
+          const notifs = await webview.executeJavaScript(NOTIF_DRAIN)
+          if (Array.isArray(notifs)) {
+            for (const n of notifs) {
+              if (typeof n?.title === 'string' && typeof n?.body === 'string') {
+                window.unichat.notify(serviceId, n.title, n.body)
+              }
+            }
+          }
+        } catch { /* silencieux */ }
       }, 4000)
     }
 
     const handleDomReady = () => {
-      webview.executeJavaScript(`
-        (function() {
-          if (window.__unichatNotifPatched) return;
-          window.__unichatNotifPatched = true;
-          const _Original = window.Notification;
-          window.Notification = function(title, options) {
-            try {
-              window.postMessage({ __unichat: true, title, body: options?.body ?? '' }, '*');
-            } catch(e) {}
-            return new _Original(title, options);
-          };
-          window.Notification.permission = 'granted';
-          window.Notification.requestPermission = () => Promise.resolve('granted');
-        })();
-      `)
+      // Injecter le patcher de notifications dès que le DOM est prêt
+      webview.executeJavaScript(NOTIF_PATCHER).catch(() => {})
     }
 
-    const handleMessage = (event: MessageEvent) => {
-      if (
-        event.data?.__unichat === true &&
-        typeof event.data.title === 'string' &&
-        typeof event.data.body === 'string'
-      ) {
-        window.unichat.notify(serviceId, event.data.title, event.data.body)
-      }
+    const handleDidFinishLoad = () => {
+      // Re-injecter après chaque chargement complet (navigation SPA, refresh)
+      webview.executeJavaScript(NOTIF_PATCHER).catch(() => {})
+      startPolling()
     }
 
-    webview.addEventListener('did-finish-load', handleDidFinishLoad)
     webview.addEventListener('dom-ready', handleDomReady)
-    window.addEventListener('message', handleMessage)
+    webview.addEventListener('did-finish-load', handleDidFinishLoad)
 
     return () => {
-      webview.removeEventListener('did-finish-load', handleDidFinishLoad)
       webview.removeEventListener('dom-ready', handleDomReady)
-      window.removeEventListener('message', handleMessage)
+      webview.removeEventListener('did-finish-load', handleDidFinishLoad)
       if (pollRef.current) clearInterval(pollRef.current)
     }
   }, [serviceId, onBadgeChange, onSenderChange])
