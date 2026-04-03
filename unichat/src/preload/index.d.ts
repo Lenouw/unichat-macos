@@ -7,7 +7,7 @@ declare global {
     unichat: {
       setBadge: (serviceId: string, count: number) => void
       notify: (serviceId: string, title: string, body: string) => void
-      onServiceSelect: (callback: (id: string) => void) => void
+      onServiceSelect: (callback: (id: string) => void) => () => void
     }
   }
 }

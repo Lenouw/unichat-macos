@@ -17,9 +17,10 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    window.unichat.onServiceSelect((id) => {
+    const cleanup = window.unichat.onServiceSelect((id) => {
       setActiveId(id)
     })
+    return cleanup
   }, [])
 
   return (

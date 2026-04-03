@@ -10,16 +10,9 @@ contextBridge.exposeInMainWorld('unichat', {
     ipcRenderer.send('notification:show', { serviceId, title: safeTitle, body: safeBody })
   },
 
-  onServiceSelect: (callback: (id: string) => void) =>
-    ipcRenderer.on('service:select', (_event, id) => callback(id)),
+  onServiceSelect: (callback: (id: string) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, id: string) => callback(id)
+    ipcRenderer.on('service:select', listener)
+    return () => ipcRenderer.removeListener('service:select', listener)
+  },
 })
-
-declare global {
-  interface Window {
-    unichat: {
-      setBadge: (serviceId: string, count: number) => void
-      notify: (serviceId: string, title: string, body: string) => void
-      onServiceSelect: (callback: (id: string) => void) => void
-    }
-  }
-}
