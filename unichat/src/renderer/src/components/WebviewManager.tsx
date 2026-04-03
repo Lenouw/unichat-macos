@@ -84,7 +84,11 @@ function WebviewPane({ serviceId, url, partition, visible, onBadgeChange }: Webv
     }
 
     const handleMessage = (event: MessageEvent) => {
-      if (event.data?.__unichat) {
+      if (
+        event.data?.__unichat === true &&
+        typeof event.data.title === 'string' &&
+        typeof event.data.body === 'string'
+      ) {
         window.unichat.notify(serviceId, event.data.title, event.data.body)
       }
     }
@@ -107,8 +111,6 @@ function WebviewPane({ serviceId, url, partition, visible, onBadgeChange }: Webv
       src={url}
       partition={partition}
       useragent={CHROME_UA}
-      // @ts-expect-error — attribut Electron non standard non typé
-      disablewebsecurity="true"
       allowpopups={true}
       style={{
         position: 'absolute',

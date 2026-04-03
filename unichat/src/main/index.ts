@@ -3,20 +3,30 @@ import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 
 const SERVICES_IDS = ['wa-perso', 'wa-pro1', 'wa-pro2', 'messenger', 'teams']
+const VALID_SERVICE_IDS = new Set(['wa-perso', 'wa-pro1', 'wa-pro2', 'messenger', 'teams'])
 
 let mainWindow: BrowserWindow | null = null
 const badges: Record<string, number> = {}
 
 function setupIPC(): void {
-  ipcMain.on('badge:update', (_event, { serviceId, count }: { serviceId: string; count: number }) => {
-    badges[serviceId] = count
+  ipcMain.on('badge:update', (_event, payload: unknown) => {
+    if (typeof payload !== 'object' || payload === null) return
+    const { serviceId, count } = payload as Record<string, unknown>
+    if (typeof serviceId !== 'string' || !VALID_SERVICE_IDS.has(serviceId)) return
+    if (typeof count !== 'number' || !Number.isFinite(count) || count < 0) return
+    badges[serviceId] = Math.floor(count)
     const total = Object.values(badges).reduce((sum, n) => sum + n, 0)
     app.dock?.setBadge(total > 0 ? String(total) : '')
   })
 
-  ipcMain.on('notification:show', (_event, { title, body }: { title: string; body: string }) => {
+  ipcMain.on('notification:show', (_event, payload: unknown) => {
+    if (typeof payload !== 'object' || payload === null) return
+    const { title, body } = payload as Record<string, unknown>
+    if (typeof title !== 'string' || typeof body !== 'string') return
+    const safeTitle = title.slice(0, 100)
+    const safeBody = body.slice(0, 300)
     if (Notification.isSupported()) {
-      new Notification({ title, body }).show()
+      new Notification({ title: safeTitle, body: safeBody }).show()
     }
   })
 }
@@ -44,7 +54,14 @@ function createWindow(): void {
   })
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url)
+    try {
+      const parsed = new URL(url)
+      if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+        shell.openExternal(url)
+      }
+    } catch {
+      // URL invalide — ignorer
+    }
     return { action: 'deny' }
   })
 
