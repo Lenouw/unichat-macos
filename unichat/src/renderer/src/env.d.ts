@@ -6,7 +6,7 @@ declare namespace JSX {
       src?: string
       partition?: string
       useragent?: string
-      allowpopups?: string
+      allowpopups?: boolean
       disablewebsecurity?: string
       ref?: React.RefObject<Electron.WebviewTag | null>
     }

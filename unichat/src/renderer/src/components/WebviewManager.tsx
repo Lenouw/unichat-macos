@@ -81,7 +81,7 @@ function WebviewPane({ serviceId, url, partition, visible, onBadgeChange }: Webv
       useragent={CHROME_UA}
       // @ts-expect-error — attribut Electron non standard non typé
       disablewebsecurity="true"
-      allowpopups="true"
+      allowpopups={true}
       style={{
         position: 'absolute',
         inset: 0,
