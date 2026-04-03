@@ -5,12 +5,32 @@ import { parseBadgeFromTitle } from './badge'
 const CHROME_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 
+// Injection JS pour extraire le nom du premier contact dans la liste de conversations
+// Fonctionne pour WhatsApp Web, Messenger et Teams via des sélecteurs différents
+const SENDER_EXTRACTOR = `
+(function() {
+  try {
+    var el =
+      document.querySelector('[data-testid="cell-frame-title"]') ||
+      document.querySelector('a[href*="/t/"] span[dir="auto"]') ||
+      document.querySelector('[data-tid="chat-list-item"] span') ||
+      document.querySelector('.fui-ChatListItem__displayName');
+    if (el) {
+      var txt = (el.getAttribute('title') || el.textContent || '').trim();
+      return txt.slice(0, 40);
+    }
+    return '';
+  } catch(e) { return ''; }
+})()
+`
+
 interface WebviewManagerProps {
   activeId: string
   onBadgeChange: (serviceId: string, count: number) => void
+  onSenderChange: (serviceId: string, sender: string) => void
 }
 
-export function WebviewManager({ activeId, onBadgeChange }: WebviewManagerProps) {
+export function WebviewManager({ activeId, onBadgeChange, onSenderChange }: WebviewManagerProps) {
   const loadedRef = useRef<Set<string>>(new Set([activeId]))
 
   useEffect(() => {
@@ -18,7 +38,7 @@ export function WebviewManager({ activeId, onBadgeChange }: WebviewManagerProps)
   }, [activeId])
 
   return (
-    <div className="flex-1 relative">
+    <div style={{ flex: 1, position: 'relative' }}>
       {SERVICES.map((service) => {
         const shouldRender = loadedRef.current.has(service.id)
         const isActive = service.id === activeId
@@ -33,6 +53,7 @@ export function WebviewManager({ activeId, onBadgeChange }: WebviewManagerProps)
             partition={service.partition}
             visible={isActive}
             onBadgeChange={onBadgeChange}
+            onSenderChange={onSenderChange}
           />
         )
       })}
@@ -46,9 +67,10 @@ interface WebviewPaneProps {
   partition: string
   visible: boolean
   onBadgeChange: (serviceId: string, count: number) => void
+  onSenderChange: (serviceId: string, sender: string) => void
 }
 
-function WebviewPane({ serviceId, url, partition, visible, onBadgeChange }: WebviewPaneProps) {
+function WebviewPane({ serviceId, url, partition, visible, onBadgeChange, onSenderChange }: WebviewPaneProps) {
   const webviewRef = useRef<Electron.WebviewTag | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -58,11 +80,22 @@ function WebviewPane({ serviceId, url, partition, visible, onBadgeChange }: Webv
 
     const handleDidFinishLoad = () => {
       if (pollRef.current) clearInterval(pollRef.current)
-      pollRef.current = setInterval(() => {
+      pollRef.current = setInterval(async () => {
+        // Badge via titre de page
         const title = webview.getTitle()
         const count = parseBadgeFromTitle(title)
         onBadgeChange(serviceId, count)
-      }, 2000)
+
+        // Dernier contact via injection DOM (toutes les 4s pour ne pas surcharger)
+        try {
+          const sender = await webview.executeJavaScript(SENDER_EXTRACTOR)
+          if (typeof sender === 'string' && sender.length > 0) {
+            onSenderChange(serviceId, sender)
+          }
+        } catch {
+          // Silencieux — la webview n'est peut-être pas encore prête
+        }
+      }, 4000)
     }
 
     const handleDomReady = () => {
@@ -103,7 +136,7 @@ function WebviewPane({ serviceId, url, partition, visible, onBadgeChange }: Webv
       window.removeEventListener('message', handleMessage)
       if (pollRef.current) clearInterval(pollRef.current)
     }
-  }, [serviceId, onBadgeChange])
+  }, [serviceId, onBadgeChange, onSenderChange])
 
   return (
     <webview

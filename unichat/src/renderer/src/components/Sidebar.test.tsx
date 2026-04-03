@@ -13,6 +13,7 @@ describe('Sidebar', () => {
   const defaultProps = {
     activeId: 'wa-perso',
     badges: {},
+    lastSenders: {},
     onSelect: vi.fn(),
   }
 

@@ -6,6 +6,7 @@ import { SERVICES } from './config/services'
 export default function App() {
   const [activeId, setActiveId] = useState(SERVICES[0].id)
   const [badges, setBadges] = useState<Record<string, number>>({})
+  const [lastSenders, setLastSenders] = useState<Record<string, string>>({})
 
   const handleBadgeChange = useCallback((serviceId: string, count: number) => {
     setBadges((prev) => {
@@ -16,6 +17,12 @@ export default function App() {
     })
   }, [])
 
+  const handleSenderChange = useCallback((serviceId: string, sender: string) => {
+    setLastSenders((prev) =>
+      prev[serviceId] === sender ? prev : { ...prev, [serviceId]: sender }
+    )
+  }, [])
+
   useEffect(() => {
     const cleanup = window.unichat.onServiceSelect((id) => {
       setActiveId(id)
@@ -24,9 +31,18 @@ export default function App() {
   }, [])
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden">
-      <Sidebar activeId={activeId} badges={badges} onSelect={setActiveId} />
-      <WebviewManager activeId={activeId} onBadgeChange={handleBadgeChange} />
+    <div style={{ display: 'flex', height: '100vh', width: '100vw', overflow: 'hidden' }}>
+      <Sidebar
+        activeId={activeId}
+        badges={badges}
+        lastSenders={lastSenders}
+        onSelect={setActiveId}
+      />
+      <WebviewManager
+        activeId={activeId}
+        onBadgeChange={handleBadgeChange}
+        onSenderChange={handleSenderChange}
+      />
     </div>
   )
 }
