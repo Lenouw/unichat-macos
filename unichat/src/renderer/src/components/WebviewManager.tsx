@@ -65,10 +65,38 @@ function WebviewPane({ serviceId, url, partition, visible, onBadgeChange }: Webv
       }, 2000)
     }
 
+    const handleDomReady = () => {
+      webview.executeJavaScript(`
+        (function() {
+          if (window.__unichatNotifPatched) return;
+          window.__unichatNotifPatched = true;
+          const _Original = window.Notification;
+          window.Notification = function(title, options) {
+            try {
+              window.postMessage({ __unichat: true, title, body: options?.body ?? '' }, '*');
+            } catch(e) {}
+            return new _Original(title, options);
+          };
+          window.Notification.permission = 'granted';
+          window.Notification.requestPermission = () => Promise.resolve('granted');
+        })();
+      `)
+    }
+
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.__unichat) {
+        window.unichat.notify(serviceId, event.data.title, event.data.body)
+      }
+    }
+
     webview.addEventListener('did-finish-load', handleDidFinishLoad)
+    webview.addEventListener('dom-ready', handleDomReady)
+    window.addEventListener('message', handleMessage)
 
     return () => {
       webview.removeEventListener('did-finish-load', handleDidFinishLoad)
+      webview.removeEventListener('dom-ready', handleDomReady)
+      window.removeEventListener('message', handleMessage)
       if (pollRef.current) clearInterval(pollRef.current)
     }
   }, [serviceId, onBadgeChange])
