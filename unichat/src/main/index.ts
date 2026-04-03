@@ -1,6 +1,8 @@
-import { app, BrowserWindow, shell, ipcMain, Notification } from 'electron'
+import { app, BrowserWindow, shell, ipcMain, Notification, globalShortcut } from 'electron'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
+
+const SERVICES_IDS = ['wa-perso', 'wa-pro1', 'wa-pro2', 'messenger', 'teams']
 
 let mainWindow: BrowserWindow | null = null
 const badges: Record<string, number> = {}
@@ -55,6 +57,13 @@ function createWindow(): void {
 
 app.whenReady().then(() => {
   setupIPC()
+
+  SERVICES_IDS.forEach((id, index) => {
+    globalShortcut.register(`CommandOrControl+${index + 1}`, () => {
+      mainWindow?.webContents.send('service:select', id)
+    })
+  })
+
   createWindow()
 
   app.on('activate', () => {
@@ -64,4 +73,8 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
+})
+
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll()
 })
