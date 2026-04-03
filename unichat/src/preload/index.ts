@@ -1,22 +1,22 @@
-import { contextBridge } from 'electron'
-import { electronAPI } from '@electron-toolkit/preload'
+import { contextBridge, ipcRenderer } from 'electron'
 
-// Custom APIs for renderer
-const api = {}
+contextBridge.exposeInMainWorld('unichat', {
+  setBadge: (serviceId: string, count: number) =>
+    ipcRenderer.send('badge:update', { serviceId, count }),
 
-// Use `contextBridge` APIs to expose Electron APIs to
-// renderer only if context isolation is enabled, otherwise
-// just add to the DOM global.
-if (process.contextIsolated) {
-  try {
-    contextBridge.exposeInMainWorld('electron', electronAPI)
-    contextBridge.exposeInMainWorld('api', api)
-  } catch (error) {
-    console.error(error)
+  notify: (serviceId: string, title: string, body: string) =>
+    ipcRenderer.send('notification:show', { serviceId, title, body }),
+
+  onServiceSelect: (callback: (id: string) => void) =>
+    ipcRenderer.on('service:select', (_event, id) => callback(id)),
+})
+
+declare global {
+  interface Window {
+    unichat: {
+      setBadge: (serviceId: string, count: number) => void
+      notify: (serviceId: string, title: string, body: string) => void
+      onServiceSelect: (callback: (id: string) => void) => void
+    }
   }
-} else {
-  // @ts-ignore (define in dts)
-  window.electron = electronAPI
-  // @ts-ignore (define in dts)
-  window.api = api
 }

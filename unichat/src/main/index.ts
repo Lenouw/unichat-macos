@@ -1,8 +1,23 @@
-import { app, BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow, shell, ipcMain, Notification } from 'electron'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 
 let mainWindow: BrowserWindow | null = null
+const badges: Record<string, number> = {}
+
+function setupIPC(): void {
+  ipcMain.on('badge:update', (_event, { serviceId, count }: { serviceId: string; count: number }) => {
+    badges[serviceId] = count
+    const total = Object.values(badges).reduce((sum, n) => sum + n, 0)
+    app.dock?.setBadge(total > 0 ? String(total) : '')
+  })
+
+  ipcMain.on('notification:show', (_event, { title, body }: { title: string; body: string }) => {
+    if (Notification.isSupported()) {
+      new Notification({ title, body }).show()
+    }
+  })
+}
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -39,6 +54,7 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  setupIPC()
   createWindow()
 
   app.on('activate', () => {
