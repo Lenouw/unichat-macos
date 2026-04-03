@@ -4,72 +4,69 @@
 **UniChat** — Application desktop macOS de messagerie unifiée, centralisant 3 comptes WhatsApp, 1 Messenger et 1 Teams dans des webviews isolées, en remplacement de Beeper (10€/mois).
 
 ## Stack technique
-**Electron** (Chromium bundlé) + React + TypeScript — décision prise après recherche Phase 1.
-- Session isolation via `partition="persist:service-id"` (natif Electron)
-- Notifications via Electron Notification API + `app.dock.setBadge()`
-- Référence : Ferdium (open source, même stack, même besoin)
+**Electron-vite** + React 18 + TypeScript + Tailwind CSS v4 + electron-builder.
+- Session isolation via `partition="persist:service-id"` (natif Electron/Chromium)
+- Badges via polling `webview.getTitle()` toutes les 2s
+- Notifications via interception `window.Notification` + postMessage + IPC
+- Tests : vitest 16 tests (5 config + 6 Sidebar + 5 badge parsing)
 
 ## Dernière mise à jour
-2026-04-03 19:30
+2026-04-03 ~21:00
 
 ## Ce qu'on a fait
-- 2026-04-03 : Initialisation du projet (Git, CONTEXT.md, .gitignore)
-- 2026-04-03 : Phase 1 de recherche complétée. Analyse de Beeper, Franz, Ferdium, Rambox, Tangram. Rapport complet dans `RECHERCHE_PHASE1.md`
+- 2026-04-03 : Phase 1 recherche complétée (rapport dans `RECHERCHE_PHASE1.md`)
+- 2026-04-03 : Plan Phase 2 écrit (10 tâches, dans `docs/superpowers/plans/2026-04-03-unichat-mvp.md`)
+- 2026-04-03 : Phase 2 **COMPLÈTE** — 10 tâches exécutées via sous-agents séquentiels avec double review (spec + qualité) après chaque tâche
 
 ## Où on en est
-**Phase 1 terminée. Prêt pour Phase 2 (développement).**
+**MVP COMPLET. Deux DMGs buildés et signés :**
+- `unichat/dist/UniChat-1.0.0-arm64.dmg` (Apple Silicon)
+- `unichat/dist/UniChat-1.0.0.dmg` (Intel x64)
 
-Conclusions clés de la recherche :
-- Multi-sessions WhatsApp Web : **OUI, faisable** avec partitions Electron isolées
-- Framework choisi : **Electron** (Chromium = compatibilité WhatsApp/Messenger/Teams garantie)
-- Tauri écarté : isolation de session non native (issue #11491 fermée "not planned")
-- Swift/WKWebView écarté : UA WebKit rejeté par WhatsApp, API complexe
-- Ferdium (GitHub) = référence directe pour l'implémentation
+L'app est prête à être installée et testée. Prochaine étape : scan des QR codes WhatsApp, test des notifications, test des raccourcis clavier Cmd+1-5.
 
 ## Architecture et décisions
 
-### Stack décidée
-- **Electron** + React + TypeScript
-- 5 webviews avec partitions complètement isolées :
+### Stack finale
+- **Electron-vite** + React 18 + TypeScript + Tailwind CSS v4
+- **5 webviews** avec partitions isolées :
   - `persist:wa-perso` → WhatsApp numéro 1
   - `persist:wa-pro1` → WhatsApp numéro 2
   - `persist:wa-pro2` → WhatsApp numéro 3
   - `persist:messenger` → Messenger
   - `persist:teams` → Teams
 
-### Points techniques clés
-- `disablewebsecurity: true` nécessaire sur les webviews WhatsApp (requis pour QR code et médias)
-- UA Chromium = accepté par WhatsApp sans spoofing
-- Notifications : MutationObserver dans chaque webview → IPC → main process → `app.dock.setBadge()` + Notification API
+### Décisions de performance
+- **Lazy load** : les webviews ne sont créées dans le DOM qu'à la première visite
+- **CSS show/hide** : changer d'onglet = `display: flex/none`, jamais unmount/remount (0ms)
+- **Badge polling** : `webview.getTitle()` toutes les 2s, pas d'injection DOM
+- **UA Chrome** : `Chrome/124.0.0.0` forcé pour compatibilité WhatsApp/Messenger
 
-### Besoins confirmés
-- 3 comptes WhatsApp (3 numéros, 3 téléphones) → 3 instances WhatsApp Web
-- 1 Messenger → messenger.com
-- 1 Teams → teams.microsoft.com
-- Sessions isolées et persistantes (pas de re-scan QR)
-- Badge par service dans la sidebar + badge global Dock
-- Notifications natives macOS
-- Raccourcis clavier Cmd+1 à Cmd+5
-- App locale, pas de backend
+### Structure des fichiers clés
+```
+unichat/
+├── src/main/index.ts           # Main process : BrowserWindow, IPC, Dock badge, raccourcis
+├── src/preload/index.ts        # contextBridge : setBadge, notify, onServiceSelect
+└── src/renderer/src/
+    ├── App.tsx                 # Layout root : Sidebar + WebviewManager
+    ├── config/services.ts      # 5 services (id, url, partition, couleur)
+    └── components/
+        ├── Sidebar.tsx         # Boutons colorés avec badges
+        ├── WebviewManager.tsx  # Lazy load + show/hide + polling + notifications
+        └── badge.ts            # parseBadgeFromTitle (testable isolément)
+```
+
+### Leçon apprise (sous-agents)
+Les sous-agents Haiku suppriment systématiquement la clé `test` dans `electron.vite.config.ts` (considérée "invalide" sans le type vitest). Solution finale : ajout de `"vitest/config"` dans `tsconfig.node.json`. Désormais le typecheck complet passe sans erreur.
 
 ## Ce qu'il reste à faire
-- [x] Initialiser le projet
-- [x] **Phase 1** : Recherche et analyse des apps existantes
-- [x] **Phase 1** : Valider la faisabilité multi-sessions WhatsApp Web
-- [x] **Phase 1** : Choisir le framework (→ Electron)
-- [x] **Phase 1** : Identifier les restrictions connues
-- [x] **Phase 1** : Produire le rapport `RECHERCHE_PHASE1.md`
-- [ ] **Phase 2** : Scaffolding Electron + React + TypeScript
-- [ ] **Phase 2** : Sidebar avec liste des 5 services
-- [ ] **Phase 2** : 5 webviews avec partitions isolées
-- [ ] **Phase 2** : Persistance des sessions (données Electron dans userData)
-- [ ] **Phase 2** : Système de badges (MutationObserver → IPC → Dock)
-- [ ] **Phase 2** : Notifications macOS natives
-- [ ] **Phase 2** : Raccourcis clavier Cmd+1 à Cmd+5
-- [ ] **Phase 2** : Lancement au démarrage (optionnel)
-- [ ] **Phase 2** : Icône et design minimaliste macOS
+- [x] Phase 1 : Recherche et choix technique
+- [x] Phase 2 : MVP complet (10 tâches)
+- [ ] **Test réel** : installer le DMG, scanner les QR codes, valider les sessions
+- [ ] **Icône définitive** : remplacer l'icône placeholder verte par une vraie icône UniChat
+- [ ] **Optionnel** : lancement au démarrage macOS (`app.setLoginItemSettings`)
+- [ ] **Optionnel** : labels personnalisables pour les 3 comptes WhatsApp
 
-## Risques identifiés
-- RAM : ~600 MB pour 5 webviews — trade-off accepté
-- WhatsApp ToS : pas de restriction technique active actuellement
-- Sessions WhatsApp limitées à 5 appareils liés par numéro (côté WhatsApp, pas webview)
+## Problèmes connus
+- Notarization Apple skippée (pas de provisioning profile) — normal pour usage privé
+- L'erreur TS `test does not exist` sur `electron.vite.config.ts` était présente jusqu'à la Task 10 (corrigée via `tsconfig.node.json`)
