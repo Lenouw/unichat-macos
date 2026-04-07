@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, ipcMain, Notification, globalShortcut, session } from 'electron'
+import { app, BrowserWindow, shell, ipcMain, Notification, globalShortcut, session, systemPreferences } from 'electron'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 import { autoUpdater } from 'electron-updater'
@@ -114,6 +114,17 @@ function setupIPC(): void {
   ipcMain.on('update:install', () => {
     autoUpdater.quitAndInstall()
   })
+
+  // Ouvrir un lien externe dans le navigateur par défaut
+  ipcMain.on('open:external', (_event, url: unknown) => {
+    if (typeof url !== 'string') return
+    try {
+      const parsed = new URL(url)
+      if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+        shell.openExternal(url)
+      }
+    } catch { /* URL invalide */ }
+  })
 }
 
 function createWindow(): void {
@@ -157,9 +168,28 @@ function createWindow(): void {
   }
 }
 
+// Empêche deux instances de l'app de tourner simultanément
+// Si une instance est déjà ouverte, on focus sa fenêtre et on quitte la nouvelle
+if (!app.requestSingleInstanceLock()) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.focus()
+    }
+  })
+}
+
 setupAutoUpdater()
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Demande la permission micro à macOS — sans ça, le flux audio est silencieux
+  // même si l'app apparaît dans Réglages système → Confidentialité → Microphone
+  if (process.platform === 'darwin') {
+    await systemPreferences.askForMediaAccess('microphone')
+  }
+
   setupMediaPermissions()
   setupIPC()
   createWindow()

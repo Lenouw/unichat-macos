@@ -26,6 +26,47 @@ const SENDER_EXTRACTOR = `
 })()
 `
 
+// Intercepte les clics sur les liens externes et window.open via une queue
+// (new-window et will-navigate ne sont plus fiables en Electron 28+)
+const LINK_PATCHER = `
+(function() {
+  if (window.__unichatLinkPatched) return;
+  window.__unichatLinkPatched = true;
+  window.__unichatLinkQueue = [];
+
+  // Intercepte window.open (liens target="_blank", partages, etc.)
+  var _origOpen = window.open;
+  window.open = function(url) {
+    if (url && typeof url === 'string' && (url.startsWith('http://') || url.startsWith('https://'))) {
+      window.__unichatLinkQueue.push(url);
+      return null;
+    }
+    return _origOpen.apply(this, arguments);
+  };
+
+  // Intercepte les clics sur les <a> qui mènent vers l'extérieur
+  document.addEventListener('click', function(e) {
+    var target = e.target;
+    while (target && target.tagName !== 'A') target = target.parentElement;
+    if (!target) return;
+    var href = target.href || target.getAttribute('href');
+    if (!href) return;
+    try {
+      var url = new URL(href, location.href);
+      if (url.protocol === 'https:' || url.protocol === 'http:') {
+        if (url.hostname !== location.hostname) {
+          e.preventDefault();
+          e.stopPropagation();
+          window.__unichatLinkQueue.push(url.href);
+        }
+      }
+    } catch(err) {}
+  }, true);
+})();
+`
+
+const LINK_DRAIN = `(window.__unichatLinkQueue || []).splice(0)`
+
 // Patche window.Notification pour stocker les notifs dans une queue
 // lisible par le parent via executeJavaScript (postMessage ne traverse pas les webviews Electron)
 const NOTIF_PATCHER = `
@@ -50,7 +91,26 @@ const NOTIF_PATCHER = `
 `
 
 // Draine la queue de notifications accumulées dans la webview
-const NOTIF_DRAIN = `(window.__unichatNotifQueue || []).splice(0)`
+// Inclut un filtre de déduplication côté webview : on n'envoie pas deux fois
+// la même notif (même titre + body) dans une fenêtre de 10s
+const NOTIF_DRAIN = `
+(function() {
+  var queue = window.__unichatNotifQueue || [];
+  var now = Date.now();
+  window.__unichatNotifSent = window.__unichatNotifSent || {};
+  var result = [];
+  for (var i = 0; i < queue.length; i++) {
+    var n = queue[i];
+    var key = n.title + '||' + n.body;
+    var last = window.__unichatNotifSent[key] || 0;
+    if (now - last > 10000) {
+      window.__unichatNotifSent[key] = now;
+      result.push(n);
+    }
+  }
+  queue.splice(0);
+  return result;
+})()`
 
 interface WebviewManagerProps {
   accounts: Account[]
@@ -126,6 +186,16 @@ function WebviewPane({ serviceId, url, partition, visible, onBadgeChange, onSend
           }
         } catch { /* silencieux */ }
 
+        // Liens externes : drainer la queue et ouvrir dans le navigateur système
+        try {
+          const links = await webview.executeJavaScript(LINK_DRAIN)
+          if (Array.isArray(links)) {
+            for (const url of links) {
+              if (typeof url === 'string') window.unichat.openExternal(url)
+            }
+          }
+        } catch { /* silencieux */ }
+
         // Notifications : drainer la queue accumulée dans la webview
         // (postMessage webview→parent ne fonctionne pas dans Electron)
         try {
@@ -141,14 +211,17 @@ function WebviewPane({ serviceId, url, partition, visible, onBadgeChange, onSend
       }, 4000)
     }
 
-    const handleDomReady = () => {
-      // Injecter le patcher de notifications dès que le DOM est prêt
+    const injectPatchers = () => {
+      webview.executeJavaScript(LINK_PATCHER).catch(() => {})
       webview.executeJavaScript(NOTIF_PATCHER).catch(() => {})
     }
 
+    const handleDomReady = () => {
+      injectPatchers()
+    }
+
     const handleDidFinishLoad = () => {
-      // Re-injecter après chaque chargement complet (navigation SPA, refresh)
-      webview.executeJavaScript(NOTIF_PATCHER).catch(() => {})
+      injectPatchers()
       startPolling()
     }
 

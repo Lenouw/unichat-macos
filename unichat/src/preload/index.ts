@@ -35,4 +35,8 @@ contextBridge.exposeInMainWorld('unichat', {
   installUpdate: () => {
     ipcRenderer.send('update:install')
   },
+
+  openExternal: (url: string) => {
+    ipcRenderer.send('open:external', url)
+  },
 })

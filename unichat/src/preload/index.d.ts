@@ -11,6 +11,7 @@ declare global {
       registerAccounts: (ids: string[]) => void
       onUpdateStatus: (callback: (event: string, payload?: string) => void) => () => void
       installUpdate: () => void
+      openExternal: (url: string) => void
     }
   }
 }
