@@ -184,10 +184,15 @@ if (!app.requestSingleInstanceLock()) {
 setupAutoUpdater()
 
 app.whenReady().then(async () => {
-  // Demande la permission micro à macOS — sans ça, le flux audio est silencieux
-  // même si l'app apparaît dans Réglages système → Confidentialité → Microphone
+  // Demande la permission micro à macOS.
+  // Si macOS retourne false (permission refusée ou jamais demandée), ouvre les Réglages Système
+  // directement sur la page Microphone pour que l'utilisateur puisse l'activer manuellement.
   if (process.platform === 'darwin') {
-    await systemPreferences.askForMediaAccess('microphone')
+    const granted = await systemPreferences.askForMediaAccess('microphone')
+    if (!granted) {
+      // Ouvre directement la page Microphone dans les Réglages Système macOS
+      shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone')
+    }
   }
 
   setupMediaPermissions()

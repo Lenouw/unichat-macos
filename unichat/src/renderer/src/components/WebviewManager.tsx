@@ -67,6 +67,31 @@ const LINK_PATCHER = `
 
 const LINK_DRAIN = `(window.__unichatLinkQueue || []).splice(0)`
 
+// Patch navigator.permissions.query pour que microphone/caméra apparaisse comme 'granted'
+// Nécessaire car Electron ne relaie pas correctement l'état TCC macOS vers les webviews :
+// navigator.permissions.query({ name: 'microphone' }) retourne 'prompt' au lieu de 'granted',
+// ce qui fait afficher à WhatsApp "cliquez sur l'icône à côté de la barre d'adresse".
+const MEDIA_PATCHER = `
+(function() {
+  if (window.__unichatMediaPatched) return;
+  window.__unichatMediaPatched = true;
+  if (!navigator.permissions || !navigator.permissions.query) return;
+  var _origQuery = navigator.permissions.query.bind(navigator.permissions);
+  navigator.permissions.query = function(desc) {
+    if (desc && (desc.name === 'microphone' || desc.name === 'camera' || desc.name === 'speaker-selection')) {
+      return Promise.resolve({
+        name: desc.name,
+        state: 'granted',
+        addEventListener: function() {},
+        removeEventListener: function() {},
+        dispatchEvent: function() { return false; }
+      });
+    }
+    return _origQuery(desc);
+  };
+})();
+`
+
 // Patche window.Notification pour stocker les notifs dans une queue
 // lisible par le parent via executeJavaScript (postMessage ne traverse pas les webviews Electron)
 const NOTIF_PATCHER = `
@@ -212,6 +237,7 @@ function WebviewPane({ serviceId, url, partition, visible, onBadgeChange, onSend
     }
 
     const injectPatchers = () => {
+      webview.executeJavaScript(MEDIA_PATCHER).catch(() => {})
       webview.executeJavaScript(LINK_PATCHER).catch(() => {})
       webview.executeJavaScript(NOTIF_PATCHER).catch(() => {})
     }
