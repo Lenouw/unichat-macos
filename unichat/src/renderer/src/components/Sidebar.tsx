@@ -14,6 +14,7 @@ interface SidebarProps {
   onAddAccount: () => void
   onDeleteAccount: (id: string) => void
   onRenameAccount: (id: string, newLabel: string) => void
+  onReorder: (fromIndex: number, toIndex: number) => void
   updateStatus: UpdateStatus
   updateVersion?: string
   updateProgress: number
@@ -36,11 +37,24 @@ export function Sidebar({
   onAddAccount,
   onDeleteAccount,
   onRenameAccount,
+  onReorder,
   updateStatus,
   updateVersion,
   updateProgress,
   onInstallUpdate,
 }: SidebarProps) {
+  const [draggingId, setDraggingId] = useState<string | null>(null)
+  const [dragOverId, setDragOverId] = useState<string | null>(null)
+
+  const handleDrop = (targetId: string) => {
+    if (!draggingId || draggingId === targetId) return
+    const from = accounts.findIndex((a) => a.id === draggingId)
+    const to = accounts.findIndex((a) => a.id === targetId)
+    if (from !== -1 && to !== -1) onReorder(from, to)
+    setDraggingId(null)
+    setDragOverId(null)
+  }
+
   return (
     <aside
       style={{
@@ -71,18 +85,49 @@ export function Sidebar({
       </div>
 
       {/* Liste des comptes (scrollable) */}
-      <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
-        {accounts.map((account) => (
-          <ServiceRow
-            key={account.id}
-            account={account}
-            isActive={activeId === account.id}
-            badge={badges[account.id] ?? 0}
-            lastSender={lastSenders[account.id] ?? ''}
-            onClick={() => onSelect(account.id)}
-            onDelete={() => onDeleteAccount(account.id)}
-            onRename={(newLabel) => onRenameAccount(account.id, newLabel)}
-          />
+      <div
+        style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}
+        onDragOver={(e) => e.preventDefault()}
+        onDragLeave={() => setDragOverId(null)}
+      >
+        {accounts.map((account, index) => (
+          <div key={account.id}>
+            {/* Indicateur de dépôt au-dessus */}
+            {dragOverId === account.id && draggingId !== account.id && (
+              <div style={{
+                height: 2,
+                background: '#007AFF',
+                margin: '0 12px',
+                borderRadius: 1,
+              }} />
+            )}
+            <ServiceRow
+              account={account}
+              isActive={activeId === account.id}
+              badge={badges[account.id] ?? 0}
+              lastSender={lastSenders[account.id] ?? ''}
+              isDragging={draggingId === account.id}
+              onClick={() => onSelect(account.id)}
+              onDelete={() => onDeleteAccount(account.id)}
+              onRename={(newLabel) => onRenameAccount(account.id, newLabel)}
+              onDragStart={() => setDraggingId(account.id)}
+              onDragOver={() => setDragOverId(account.id)}
+              onDrop={() => handleDrop(account.id)}
+              onDragEnd={() => { setDraggingId(null); setDragOverId(null) }}
+            />
+            {/* Indicateur en bas du dernier élément si on drague vers la fin */}
+            {index === accounts.length - 1 &&
+              dragOverId === null &&
+              draggingId !== null &&
+              draggingId !== account.id && (
+                <div style={{
+                  height: 2,
+                  background: '#007AFF',
+                  margin: '0 12px',
+                  borderRadius: 1,
+                }} />
+              )}
+          </div>
         ))}
       </div>
 
@@ -244,7 +289,6 @@ function ServiceIcon({ account, isActive }: { account: Account; isActive: boolea
 
   return (
     <div style={{ position: 'relative', flexShrink: 0, width: 34, height: 34 }}>
-      {/* Cercle coloré avec l'emoji du service */}
       <div style={{
         width: 34,
         height: 34,
@@ -260,7 +304,6 @@ function ServiceIcon({ account, isActive }: { account: Account; isActive: boolea
       }}>
         {emoji}
       </div>
-      {/* Badge lettre du compte (ex: P pour Perso, B pour Business) */}
       <div style={{
         position: 'absolute',
         bottom: -2,
@@ -290,24 +333,35 @@ function ServiceRow({
   isActive,
   badge,
   lastSender,
+  isDragging,
   onClick,
   onDelete,
   onRename,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
 }: {
   account: Account
   isActive: boolean
   badge: number
   lastSender: string
+  isDragging: boolean
   onClick: () => void
   onDelete: () => void
   onRename: (newLabel: string) => void
+  onDragStart: () => void
+  onDragOver: () => void
+  onDrop: () => void
+  onDragEnd: () => void
 }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(account.label)
   const [hovered, setHovered] = useState(false)
+  const [showMenu, setShowMenu] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
-  const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (editing) {
@@ -316,14 +370,24 @@ function ServiceRow({
     }
   }, [editing, account.label])
 
-  // Reset confirmation de suppression après 2s sans 2e clic
+  // Fermer le menu si clic en dehors
   useEffect(() => {
-    if (confirmDelete) {
-      deleteTimerRef.current = setTimeout(() => setConfirmDelete(false), 2000)
+    if (!showMenu) return
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setShowMenu(false)
+        setConfirmDelete(false)
+      }
     }
-    return () => {
-      if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current)
-    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [showMenu])
+
+  // Auto-reset de la confirmation après 3s
+  useEffect(() => {
+    if (!confirmDelete) return
+    const t = setTimeout(() => setConfirmDelete(false), 3000)
+    return () => clearTimeout(t)
   }, [confirmDelete])
 
   const commit = () => {
@@ -331,10 +395,18 @@ function ServiceRow({
     if (draft.trim()) onRename(draft.trim())
   }
 
-  const handleDeleteClick = (e: React.MouseEvent) => {
+  const handleMenuRename = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    setShowMenu(false)
+    setConfirmDelete(false)
+    setEditing(true)
+  }
+
+  const handleMenuDelete = (e: React.MouseEvent) => {
     e.stopPropagation()
     if (confirmDelete) {
       onDelete()
+      setShowMenu(false)
     } else {
       setConfirmDelete(true)
     }
@@ -345,136 +417,241 @@ function ServiceRow({
   const subtext = lastSender || (badge > 0 ? `${badge} non lu${badge > 1 ? 's' : ''}` : '')
 
   return (
-    <button
-      onClick={editing ? undefined : onClick}
+    // Wrapper div : gère le hover, le drag, et le menu (qui ne peut pas être dans un <button>)
+    <div
+      style={{ position: 'relative', opacity: isDragging ? 0.3 : 1, transition: 'opacity 150ms' }}
       onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => { setHovered(false); setConfirmDelete(false) }}
-      style={{
-        WebkitAppRegion: 'no-drag',
-        position: 'relative',
-        display: 'flex',
-        alignItems: 'center',
-        gap: 10,
-        padding: '9px 14px 9px 16px',
-        background: isActive ? `${account.color}10` : hovered ? 'rgba(255,255,255,0.04)' : 'transparent',
-        border: 'none',
-        borderLeft: `3px solid ${isActive ? account.color : 'transparent'}`,
-        cursor: 'default',
-        width: '100%',
-        textAlign: 'left',
-        transition: 'background 150ms ease',
-        minHeight: 52,
-      } as React.CSSProperties}
+      onMouseLeave={() => {
+        setHovered(false)
+        if (!showMenu) setConfirmDelete(false)
+      }}
     >
-      {/* Icône service + lettre du compte */}
-      <ServiceIcon account={account} isActive={isActive} />
+      <button
+        draggable={!editing}
+        onDragStart={(e) => { e.stopPropagation(); onDragStart() }}
+        onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); onDragOver() }}
+        onDrop={(e) => { e.preventDefault(); e.stopPropagation(); onDrop() }}
+        onDragEnd={onDragEnd}
+        onClick={editing ? undefined : onClick}
+        style={{
+          WebkitAppRegion: 'no-drag',
+          position: 'relative',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          padding: '9px 14px 9px 16px',
+          background: isActive ? `${account.color}10` : hovered ? 'rgba(255,255,255,0.04)' : 'transparent',
+          border: 'none',
+          borderLeft: `3px solid ${isActive ? account.color : 'transparent'}`,
+          cursor: hovered && !editing ? 'grab' : 'default',
+          width: '100%',
+          textAlign: 'left',
+          transition: 'background 150ms ease',
+          minHeight: 52,
+        } as React.CSSProperties}
+      >
+        {/* Poignée de glisser — indication visuelle */}
+        {hovered && !editing && (
+          <div style={{
+            position: 'absolute',
+            left: 4,
+            top: '50%',
+            transform: 'translateY(-50%)',
+            fontSize: 10,
+            color: 'rgba(255,255,255,0.18)',
+            lineHeight: 1,
+            pointerEvents: 'none',
+            userSelect: 'none',
+          }}>
+            ⠿
+          </div>
+        )}
 
-      {/* Texte */}
-      <div style={{ flex: 1, minWidth: 0 }}>
-        {editing ? (
-          <input
-            ref={inputRef}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value.slice(0, 100))}
-            onBlur={commit}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') commit()
-              if (e.key === 'Escape') setEditing(false)
-            }}
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              width: '100%',
-              background: 'rgba(255,255,255,0.08)',
-              border: `1px solid ${account.color}`,
-              borderRadius: 4,
-              color: '#fff',
-              fontSize: 13,
-              fontWeight: 600,
-              fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
-              padding: '2px 6px',
-              outline: 'none',
-            }}
-          />
-        ) : (
-          <div
-            onDoubleClick={(e) => { e.stopPropagation(); setEditing(true) }}
-            title={account.label}
-            style={{
-              fontSize: 13,
-              fontWeight: isActive ? 600 : 400,
-              color: isActive ? '#fff' : 'rgba(255,255,255,0.65)',
-              letterSpacing: '-0.01em',
-              fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
+        {/* Icône service + lettre du compte */}
+        <ServiceIcon account={account} isActive={isActive} />
+
+        {/* Texte */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {editing ? (
+            <input
+              ref={inputRef}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value.slice(0, 100))}
+              onBlur={commit}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') commit()
+                if (e.key === 'Escape') setEditing(false)
+              }}
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                width: '100%',
+                background: 'rgba(255,255,255,0.08)',
+                border: `1px solid ${account.color}`,
+                borderRadius: 4,
+                color: '#fff',
+                fontSize: 13,
+                fontWeight: 600,
+                fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
+                padding: '2px 6px',
+                outline: 'none',
+              }}
+            />
+          ) : (
+            <div
+              onDoubleClick={(e) => { e.stopPropagation(); setEditing(true) }}
+              title={account.label}
+              style={{
+                fontSize: 13,
+                fontWeight: isActive ? 600 : 400,
+                color: isActive ? '#fff' : 'rgba(255,255,255,0.65)',
+                letterSpacing: '-0.01em',
+                fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                lineHeight: 1.3,
+                transition: 'color 150ms ease, font-weight 150ms ease',
+              }}>
+              {account.label}
+            </div>
+          )}
+          {!editing && subtext && (
+            <div style={{
+              fontSize: 11,
+              color: 'rgba(255,255,255,0.35)',
+              marginTop: 2,
               whiteSpace: 'nowrap',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
-              lineHeight: 1.3,
-              transition: 'color 150ms ease, font-weight 150ms ease',
+              fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
+              lineHeight: 1.2,
             }}>
-            {account.label}
-          </div>
-        )}
-        {!editing && subtext && (
-          <div style={{
-            fontSize: 11,
-            color: 'rgba(255,255,255,0.35)',
-            marginTop: 2,
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
-            lineHeight: 1.2,
-          }}>
-            {subtext}
-          </div>
-        )}
-      </div>
+              {subtext}
+            </div>
+          )}
+        </div>
 
-      {/* Badge OU bouton supprimer (au hover) */}
-      {!editing && hovered ? (
-        <button
-          onClick={handleDeleteClick}
-          title={confirmDelete ? 'Cliquer pour confirmer' : 'Supprimer ce compte'}
-          style={{
+        {/* Bouton ··· au hover, badge sinon */}
+        {!editing && hovered ? (
+          <div
+            onClick={(e) => { e.stopPropagation(); setShowMenu(!showMenu) }}
+            title="Options"
+            style={{
+              WebkitAppRegion: 'no-drag',
+              flexShrink: 0,
+              width: 22,
+              height: 22,
+              borderRadius: '50%',
+              background: showMenu ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.08)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              fontSize: 13,
+              color: 'rgba(255,255,255,0.55)',
+              letterSpacing: '-2px',
+              paddingLeft: 1,
+              userSelect: 'none',
+            } as React.CSSProperties}
+          >
+            ···
+          </div>
+        ) : badge > 0 && !editing ? (
+          <div style={{
             flexShrink: 0,
-            width: 22,
-            height: 22,
-            borderRadius: '50%',
-            background: confirmDelete ? '#FF3B30' : 'rgba(255,255,255,0.1)',
-            border: 'none',
+            minWidth: 18,
+            height: 18,
+            borderRadius: 9,
+            background: account.color,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            cursor: 'pointer',
-            fontSize: 12,
-            color: confirmDelete ? '#fff' : 'rgba(255,255,255,0.5)',
-            transition: 'all 150ms ease',
-            padding: 0,
+            padding: '0 5px',
+            fontSize: 10,
+            fontWeight: 700,
+            fontFamily: 'ui-monospace, "SF Mono", monospace',
+            color: badgeTextColor,
+            letterSpacing: '-0.02em',
+            boxShadow: `0 0 8px ${account.color}50`,
+          }}>
+            {badgeText}
+          </div>
+        ) : null}
+      </button>
+
+      {/* Menu contextuel — hors du <button> pour pouvoir contenir des <button> */}
+      {showMenu && (
+        <div
+          ref={menuRef}
+          style={{
+            position: 'absolute',
+            right: 10,
+            top: 46,
+            zIndex: 200,
+            background: '#1e1e20',
+            border: '1px solid rgba(255,255,255,0.12)',
+            borderRadius: 8,
+            boxShadow: '0 8px 28px rgba(0,0,0,0.6)',
+            overflow: 'hidden',
+            minWidth: 172,
           }}
         >
-          {confirmDelete ? '!' : '×'}
-        </button>
-      ) : badge > 0 && !editing ? (
-        <div style={{
-          flexShrink: 0,
-          minWidth: 18,
-          height: 18,
-          borderRadius: 9,
-          background: account.color,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          padding: '0 5px',
-          fontSize: 10,
-          fontWeight: 700,
-          fontFamily: 'ui-monospace, "SF Mono", monospace',
-          color: badgeTextColor,
-          letterSpacing: '-0.02em',
-          boxShadow: `0 0 8px ${account.color}50`,
-        }}>
-          {badgeText}
+          {/* Renommer */}
+          <button
+            onClick={handleMenuRename}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              width: '100%',
+              padding: '9px 14px',
+              background: 'transparent',
+              border: 'none',
+              color: 'rgba(255,255,255,0.8)',
+              fontSize: 13,
+              fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
+              cursor: 'pointer',
+              textAlign: 'left',
+            } as React.CSSProperties}
+            onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.06)')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+          >
+            <span style={{ fontSize: 14 }}>✏️</span> Renommer
+          </button>
+
+          <div style={{ height: 1, background: 'rgba(255,255,255,0.06)', margin: '0 10px' }} />
+
+          {/* Supprimer — 2 clics requis */}
+          <button
+            onClick={handleMenuDelete}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              width: '100%',
+              padding: '9px 14px',
+              background: confirmDelete ? 'rgba(255,59,48,0.18)' : 'transparent',
+              border: 'none',
+              color: '#FF3B30',
+              fontSize: 13,
+              fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
+              cursor: 'pointer',
+              textAlign: 'left',
+              fontWeight: confirmDelete ? 600 : 400,
+              transition: 'all 120ms',
+            } as React.CSSProperties}
+            onMouseEnter={(e) => {
+              if (!confirmDelete) e.currentTarget.style.background = 'rgba(255,59,48,0.08)'
+            }}
+            onMouseLeave={(e) => {
+              if (!confirmDelete) e.currentTarget.style.background = 'transparent'
+            }}
+          >
+            <span style={{ fontSize: 14 }}>{confirmDelete ? '⚠️' : '🗑'}</span>
+            {confirmDelete ? 'Confirmer la suppression' : 'Supprimer ce compte'}
+          </button>
         </div>
-      ) : null}
-    </button>
+      )}
+    </div>
   )
 }

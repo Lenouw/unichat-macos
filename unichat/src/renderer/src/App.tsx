@@ -82,6 +82,14 @@ export default function App() {
     saveAccounts(updated)
   }
 
+  const handleReorder = (fromIndex: number, toIndex: number) => {
+    const updated = [...accounts]
+    const [moved] = updated.splice(fromIndex, 1)
+    updated.splice(toIndex, 0, moved)
+    setAccounts(updated)
+    saveAccounts(updated)
+  }
+
   return (
     <div style={{ display: 'flex', height: '100vh', width: '100vw', overflow: 'hidden' }}>
       <Sidebar
@@ -93,6 +101,7 @@ export default function App() {
         onAddAccount={() => setShowAddModal(true)}
         onDeleteAccount={handleDeleteAccount}
         onRenameAccount={handleRenameAccount}
+        onReorder={handleReorder}
         updateStatus={updateStatus}
         updateVersion={updateVersion}
         updateProgress={updateProgress}

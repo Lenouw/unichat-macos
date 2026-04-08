@@ -28,6 +28,7 @@ describe('Sidebar', () => {
     onAddAccount: vi.fn(),
     onDeleteAccount: vi.fn(),
     onRenameAccount: vi.fn(),
+    onReorder: vi.fn(),
     updateStatus: 'idle' as const,
     updateVersion: undefined,
     updateProgress: 0,
