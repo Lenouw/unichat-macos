@@ -75,20 +75,37 @@ const MEDIA_PATCHER = `
 (function() {
   if (window.__unichatMediaPatched) return;
   window.__unichatMediaPatched = true;
-  if (!navigator.permissions || !navigator.permissions.query) return;
-  var _origQuery = navigator.permissions.query.bind(navigator.permissions);
-  navigator.permissions.query = function(desc) {
-    if (desc && (desc.name === 'microphone' || desc.name === 'camera' || desc.name === 'speaker-selection')) {
-      return Promise.resolve({
-        name: desc.name,
-        state: 'granted',
-        addEventListener: function() {},
-        removeEventListener: function() {},
-        dispatchEvent: function() { return false; }
-      });
-    }
-    return _origQuery(desc);
+
+  var MEDIA_NAMES = ['microphone', 'camera', 'speaker-selection'];
+  var GRANTED_RESULT = function(name) {
+    return { name: name, state: 'granted', onchange: null,
+      addEventListener: function() {}, removeEventListener: function() {},
+      dispatchEvent: function() { return false; } };
   };
+
+  // Patch l'instance navigator.permissions.query
+  if (navigator.permissions && navigator.permissions.query) {
+    var _origQuery = navigator.permissions.query.bind(navigator.permissions);
+    navigator.permissions.query = function(desc) {
+      if (desc && MEDIA_NAMES.indexOf(desc.name) !== -1) {
+        return Promise.resolve(GRANTED_RESULT(desc.name));
+      }
+      return _origQuery(desc);
+    };
+  }
+
+  // Patch aussi le prototype pour intercepter les appels via Permissions.prototype.query.call(...)
+  if (window.Permissions && window.Permissions.prototype && window.Permissions.prototype.query) {
+    try {
+      var _origProto = window.Permissions.prototype.query;
+      window.Permissions.prototype.query = function(desc) {
+        if (desc && MEDIA_NAMES.indexOf(desc.name) !== -1) {
+          return Promise.resolve(GRANTED_RESULT(desc.name));
+        }
+        return _origProto.call(this, desc);
+      };
+    } catch(e) {}
+  }
 })();
 `
 

@@ -52,9 +52,17 @@ function setupAutoUpdater(): void {
 }
 
 function setupMediaPermissions(): void {
-  const allowedPermissions = new Set(['media', 'microphone', 'audioCapture', 'notifications', 'clipboard-read'])
+  const allowedPermissions = new Set([
+    'media', 'microphone', 'audioCapture',
+    'camera', 'videoCapture',
+    'notifications', 'clipboard-read',
+  ])
+
+  const appliedSessions = new WeakSet<Electron.Session>()
 
   const applyToSession = (ses: Electron.Session): void => {
+    if (appliedSessions.has(ses)) return
+    appliedSessions.add(ses)
     ses.setPermissionRequestHandler((_wc, permission, callback) => {
       callback(allowedPermissions.has(permission))
     })
@@ -63,13 +71,21 @@ function setupMediaPermissions(): void {
     })
   }
 
-  // Appliquer immédiatement aux partitions connues déjà présentes sur disque
-  // (session-created ne fire PAS pour les sessions chargées depuis le cache Electron)
+  // Session par défaut
+  applyToSession(session.defaultSession)
+
+  // Partitions connues déjà sur disque (session-created ne fire pas pour celles-ci)
   const knownPartitions = ['wa-perso', 'wa-pro1', 'wa-pro2', 'messenger', 'teams']
   knownPartitions.forEach((id) => applyToSession(session.fromPartition(`persist:${id}`)))
 
-  // Attraper toutes les nouvelles sessions créées dynamiquement (nouveaux comptes)
+  // Nouvelles sessions dynamiques (nouveaux comptes)
   app.on('session-created', applyToSession)
+
+  // Filet de sécurité : chaque webContents créé (webviews de comptes dynamiques)
+  // garantit que sa session a bien les handlers même si session-created a été manqué
+  app.on('web-contents-created', (_event, contents) => {
+    applyToSession(contents.session)
+  })
 }
 
 function setupIPC(): void {
