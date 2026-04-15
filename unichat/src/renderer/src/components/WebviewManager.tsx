@@ -124,7 +124,9 @@ const NOTIF_PATCHER = `
         body: String(options && options.body ? options.body : '').slice(0, 300)
       });
     } catch(e) {}
-    return new _Original(title, options);
+    // Ne pas appeler _Original : le main process affiche la notif via IPC
+    // pour éviter les doublons (webview + main process afficheraient chacun une notif)
+    return { close: function() {} };
   };
   window.Notification.permission = 'granted';
   window.Notification.requestPermission = function() { return Promise.resolve('granted'); };
