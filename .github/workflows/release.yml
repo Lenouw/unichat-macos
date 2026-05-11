@@ -21,12 +21,15 @@ jobs:
         with:
           node-version: 20
           cache: 'npm'
+          cache-dependency-path: unichat/package-lock.json
 
       - name: Install dependencies
+        working-directory: unichat
         run: npm ci
 
       - name: Build and publish
+        working-directory: unichat
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: false
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npm run build:mac -- --publish always
