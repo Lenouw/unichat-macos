@@ -18,7 +18,10 @@ export default function App() {
 
   // Envoyer les IDs de compte au main process pour les raccourcis Cmd+1-9
   useEffect(() => {
-    window.unichat.registerAccounts(accounts.map((a) => a.id))
+    window.unichat.registerAccounts(
+      accounts.map((a) => a.id),
+      accounts.map((a) => a.partition)
+    )
   }, [accounts])
 
   // Écouter les événements de mise à jour
@@ -107,12 +110,24 @@ export default function App() {
         updateProgress={updateProgress}
         onInstallUpdate={() => window.unichat.installUpdate()}
       />
-      <WebviewManager
-        accounts={accounts}
-        activeId={activeId}
-        onBadgeChange={handleBadgeChange}
-        onSenderChange={handleSenderChange}
-      />
+      {accounts.length === 0 ? (
+        <div style={{
+          flex: 1, display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center',
+          color: '#666', gap: 12,
+        }}>
+          <div style={{ fontSize: 48 }}>💬</div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: '#999' }}>Aucun compte</div>
+          <div style={{ fontSize: 13, color: '#555' }}>Clique sur + pour ajouter un compte</div>
+        </div>
+      ) : (
+        <WebviewManager
+          accounts={accounts}
+          activeId={activeId}
+          onBadgeChange={handleBadgeChange}
+          onSenderChange={handleSenderChange}
+        />
+      )}
       {showAddModal && (
         <AddAccountModal
           onAdd={handleAddAccount}

@@ -16,8 +16,8 @@ contextBridge.exposeInMainWorld('unichat', {
     return () => ipcRenderer.removeListener('service:select', listener)
   },
 
-  registerAccounts: (ids: string[]) => {
-    ipcRenderer.send('accounts:register', ids)
+  registerAccounts: (ids: string[], partitions: string[]) => {
+    ipcRenderer.send('accounts:register', { ids, partitions })
   },
 
   onUpdateStatus: (callback: (event: string, payload?: string) => void) => {

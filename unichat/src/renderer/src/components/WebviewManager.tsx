@@ -211,21 +211,25 @@ function WebviewPane({ serviceId, url, partition, visible, onBadgeChange, onSend
     const webview = webviewRef.current
     if (!webview) return
 
+    let mounted = true
+
     const startPolling = () => {
       if (pollRef.current) clearInterval(pollRef.current)
 
       pollRef.current = setInterval(async () => {
+        if (!mounted) return
+
         // Badge via titre de page
         try {
           const title = webview.getTitle()
           const count = parseBadgeFromTitle(title)
-          onBadgeChange(serviceId, count)
+          if (mounted) onBadgeChange(serviceId, count)
         } catch { /* webview pas prête */ }
 
         // Dernier contact via injection DOM
         try {
           const sender = await webview.executeJavaScript(SENDER_EXTRACTOR)
-          if (typeof sender === 'string' && sender.length > 0) {
+          if (mounted && typeof sender === 'string' && sender.length > 0) {
             onSenderChange(serviceId, sender)
           }
         } catch { /* silencieux */ }
@@ -233,7 +237,7 @@ function WebviewPane({ serviceId, url, partition, visible, onBadgeChange, onSend
         // Liens externes : drainer la queue et ouvrir dans le navigateur système
         try {
           const links = await webview.executeJavaScript(LINK_DRAIN)
-          if (Array.isArray(links)) {
+          if (mounted && Array.isArray(links)) {
             for (const url of links) {
               if (typeof url === 'string') window.unichat.openExternal(url)
             }
@@ -241,10 +245,9 @@ function WebviewPane({ serviceId, url, partition, visible, onBadgeChange, onSend
         } catch { /* silencieux */ }
 
         // Notifications : drainer la queue accumulée dans la webview
-        // (postMessage webview→parent ne fonctionne pas dans Electron)
         try {
           const notifs = await webview.executeJavaScript(NOTIF_DRAIN)
-          if (Array.isArray(notifs)) {
+          if (mounted && Array.isArray(notifs)) {
             for (const n of notifs) {
               if (typeof n?.title === 'string' && typeof n?.body === 'string') {
                 window.unichat.notify(serviceId, n.title, n.body)
@@ -274,6 +277,7 @@ function WebviewPane({ serviceId, url, partition, visible, onBadgeChange, onSend
     webview.addEventListener('did-finish-load', handleDidFinishLoad)
 
     return () => {
+      mounted = false
       webview.removeEventListener('dom-ready', handleDomReady)
       webview.removeEventListener('did-finish-load', handleDidFinishLoad)
       if (pollRef.current) clearInterval(pollRef.current)

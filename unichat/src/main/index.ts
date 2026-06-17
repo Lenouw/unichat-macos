@@ -13,6 +13,26 @@ let mainWindow: BrowserWindow | null = null
 const badges: Record<string, number> = {}
 let registeredAccountIds: string[] = []
 
+const SAFE_PARTITION_RE = /^persist:[a-zA-Z0-9_-]{1,128}$/
+
+const allowedPermissions = new Set([
+  'media', 'microphone', 'audioCapture',
+  'camera', 'videoCapture',
+  'notifications', 'clipboard-read',
+])
+const appliedSessions = new WeakSet<Electron.Session>()
+
+function applyToSession(ses: Electron.Session): void {
+  if (appliedSessions.has(ses)) return
+  appliedSessions.add(ses)
+  ses.setPermissionRequestHandler((_wc, permission, callback) => {
+    callback(allowedPermissions.has(permission))
+  })
+  ses.setPermissionCheckHandler((_wc, permission) => {
+    return allowedPermissions.has(permission)
+  })
+}
+
 function setupAutoUpdater(): void {
   // Pas de check en dev — uniquement en production
   if (is.dev) return
@@ -52,26 +72,6 @@ function setupAutoUpdater(): void {
 }
 
 function setupMediaPermissions(): void {
-  const allowedPermissions = new Set([
-    'media', 'microphone', 'audioCapture',
-    'camera', 'videoCapture',
-    'notifications', 'clipboard-read',
-  ])
-
-  const appliedSessions = new WeakSet<Electron.Session>()
-
-  const applyToSession = (ses: Electron.Session): void => {
-    if (appliedSessions.has(ses)) return
-    appliedSessions.add(ses)
-    ses.setPermissionRequestHandler((_wc, permission, callback) => {
-      callback(allowedPermissions.has(permission))
-    })
-    ses.setPermissionCheckHandler((_wc, permission) => {
-      return allowedPermissions.has(permission)
-    })
-  }
-
-  // Session par défaut
   applyToSession(session.defaultSession)
 
   // Partitions connues déjà sur disque (session-created ne fire pas pour celles-ci)
@@ -81,8 +81,7 @@ function setupMediaPermissions(): void {
   // Nouvelles sessions dynamiques (nouveaux comptes)
   app.on('session-created', applyToSession)
 
-  // Filet de sécurité : chaque webContents créé (webviews de comptes dynamiques)
-  // garantit que sa session a bien les handlers même si session-created a été manqué
+  // Filet de sécurité : chaque webContents créé garantit que sa session a les handlers
   app.on('web-contents-created', (_event, contents) => {
     applyToSession(contents.session)
   })
@@ -111,12 +110,22 @@ function setupIPC(): void {
     }
   })
 
-  ipcMain.on('accounts:register', (_event, ids: unknown) => {
-    if (!Array.isArray(ids)) return
+  ipcMain.on('accounts:register', (_event, payload: unknown) => {
+    const p = (typeof payload === 'object' && payload !== null) ? payload as Record<string, unknown> : {}
+    const ids = Array.isArray(p.ids) ? p.ids : []
+    const partitions = Array.isArray(p.partitions) ? p.partitions : []
+
     const validIds = ids.filter((id): id is string =>
       typeof id === 'string' && SAFE_ID_RE.test(id)
     )
     registeredAccountIds = validIds.slice(0, 9)
+
+    // Appliquer les permissions aux sessions des comptes dynamiques
+    partitions.forEach((part) => {
+      if (typeof part === 'string' && SAFE_PARTITION_RE.test(part)) {
+        applyToSession(session.fromPartition(part))
+      }
+    })
 
     globalShortcut.unregisterAll()
     registeredAccountIds.forEach((id, index) => {
