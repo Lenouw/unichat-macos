@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { SERVICE_TYPES, ServiceType } from '../config/serviceTypes'
 
 const COLOR_PALETTE = [
@@ -18,6 +18,15 @@ export function AddAccountModal({ onAdd, onClose }: AddAccountModalProps) {
   const [selectedType, setSelectedType] = useState<ServiceType | null>(null)
   const [label, setLabel] = useState('')
   const [color, setColor] = useState('')
+
+  // Échap ferme la modal — réflexe macOS universel
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [onClose])
 
   const handleSelectType = (type: ServiceType) => {
     setSelectedType(type)
@@ -46,6 +55,9 @@ export function AddAccountModal({ onAdd, onClose }: AddAccountModalProps) {
     >
       <div
         onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Ajouter un compte"
         style={{
           background: '#161618',
           border: '1px solid rgba(255,255,255,0.1)',

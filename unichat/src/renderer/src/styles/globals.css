@@ -25,3 +25,7 @@ body {
 aside {
   -webkit-app-region: drag;
 }
+
+@keyframes unichat-spin {
+  to { transform: rotate(360deg); }
+}

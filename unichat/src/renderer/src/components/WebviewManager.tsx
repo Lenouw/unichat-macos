@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Account } from '../config/accounts'
 import { parseBadgeFromTitle } from './badge'
 
@@ -11,6 +11,7 @@ const SENDER_EXTRACTOR = `
   try {
     var el =
       document.querySelector('[data-testid="cell-frame-title"]') ||
+      document.querySelector('#pane-side [role="listitem"] span[title]') ||
       document.querySelector('a[href*="/t/"] span[dir="auto"]') ||
       document.querySelector('[data-tid="chat-list-item"] span') ||
       document.querySelector('.fui-ChatListItem__displayName') ||
@@ -25,47 +26,6 @@ const SENDER_EXTRACTOR = `
   } catch(e) { return ''; }
 })()
 `
-
-// Intercepte les clics sur les liens externes et window.open via une queue
-// (new-window et will-navigate ne sont plus fiables en Electron 28+)
-const LINK_PATCHER = `
-(function() {
-  if (window.__unichatLinkPatched) return;
-  window.__unichatLinkPatched = true;
-  window.__unichatLinkQueue = [];
-
-  // Intercepte window.open (liens target="_blank", partages, etc.)
-  var _origOpen = window.open;
-  window.open = function(url) {
-    if (url && typeof url === 'string' && (url.startsWith('http://') || url.startsWith('https://'))) {
-      window.__unichatLinkQueue.push(url);
-      return null;
-    }
-    return _origOpen.apply(this, arguments);
-  };
-
-  // Intercepte les clics sur les <a> qui mènent vers l'extérieur
-  document.addEventListener('click', function(e) {
-    var target = e.target;
-    while (target && target.tagName !== 'A') target = target.parentElement;
-    if (!target) return;
-    var href = target.href || target.getAttribute('href');
-    if (!href) return;
-    try {
-      var url = new URL(href, location.href);
-      if (url.protocol === 'https:' || url.protocol === 'http:') {
-        if (url.hostname !== location.hostname) {
-          e.preventDefault();
-          e.stopPropagation();
-          window.__unichatLinkQueue.push(url.href);
-        }
-      }
-    } catch(err) {}
-  }, true);
-})();
-`
-
-const LINK_DRAIN = `(window.__unichatLinkQueue || []).splice(0)`
 
 // Patch navigator.permissions.query pour que microphone/caméra apparaisse comme 'granted'
 // Nécessaire car Electron ne relaie pas correctement l'état TCC macOS vers les webviews :
@@ -135,20 +95,24 @@ const NOTIF_PATCHER = `
 `
 
 // Draine la queue de notifications accumulées dans la webview
-// Inclut un filtre de déduplication côté webview : on n'envoie pas deux fois
-// la même notif (même titre + body) dans une fenêtre de 10s
+// Filtre de déduplication : même titre + body pas renvoyé dans une fenêtre de 10s.
+// Les entrées de plus de 60s sont purgées pour borner la mémoire.
 const NOTIF_DRAIN = `
 (function() {
   var queue = window.__unichatNotifQueue || [];
   var now = Date.now();
   window.__unichatNotifSent = window.__unichatNotifSent || {};
+  var sent = window.__unichatNotifSent;
+  for (var k in sent) {
+    if (now - sent[k] > 60000) delete sent[k];
+  }
   var result = [];
   for (var i = 0; i < queue.length; i++) {
     var n = queue[i];
     var key = n.title + '||' + n.body;
-    var last = window.__unichatNotifSent[key] || 0;
+    var last = sent[key] || 0;
     if (now - last > 10000) {
-      window.__unichatNotifSent[key] = now;
+      sent[key] = now;
       result.push(n);
     }
   }
@@ -164,27 +128,47 @@ interface WebviewManagerProps {
 }
 
 export function WebviewManager({ accounts, activeId, onBadgeChange, onSenderChange }: WebviewManagerProps) {
-  const loadedRef = useRef<Set<string>>(new Set([activeId]))
+  // Toutes les webviews sont montées au démarrage (sinon les comptes jamais
+  // visités ne produisent ni badge ni notification), mais en différé échelonné
+  // pour ne pas saturer le lancement : compte actif immédiatement, puis un
+  // compte supplémentaire toutes les 2 secondes.
+  const [mountedIds, setMountedIds] = useState<Set<string>>(() => new Set([activeId]))
 
   useEffect(() => {
-    loadedRef.current.add(activeId)
+    setMountedIds((prev) => {
+      if (prev.has(activeId)) return prev
+      const next = new Set(prev)
+      next.add(activeId)
+      return next
+    })
   }, [activeId])
+
+  useEffect(() => {
+    const pending = accounts.filter((a) => !mountedIds.has(a.id))
+    if (pending.length === 0) return
+    const timer = setTimeout(() => {
+      setMountedIds((prev) => {
+        const next = new Set(prev)
+        next.add(pending[0].id)
+        return next
+      })
+    }, 2000)
+    return () => clearTimeout(timer)
+  }, [accounts, mountedIds])
 
   return (
     <div style={{ flex: 1, position: 'relative' }}>
       {accounts.map((account) => {
-        const shouldRender = loadedRef.current.has(account.id)
-        const isActive = account.id === activeId
-
-        if (!shouldRender) return null
+        if (!mountedIds.has(account.id)) return null
 
         return (
           <WebviewPane
             key={account.id}
             serviceId={account.id}
+            serviceKey={account.serviceKey}
             url={account.url}
             partition={account.partition}
-            visible={isActive}
+            visible={account.id === activeId}
             onBadgeChange={onBadgeChange}
             onSenderChange={onSenderChange}
           />
@@ -196,6 +180,7 @@ export function WebviewManager({ accounts, activeId, onBadgeChange, onSenderChan
 
 interface WebviewPaneProps {
   serviceId: string
+  serviceKey: string
   url: string
   partition: string
   visible: boolean
@@ -203,18 +188,30 @@ interface WebviewPaneProps {
   onSenderChange: (serviceId: string, sender: string) => void
 }
 
-function WebviewPane({ serviceId, url, partition, visible, onBadgeChange, onSenderChange }: WebviewPaneProps) {
+type PaneStatus = 'loading' | 'ready' | 'error'
+
+function WebviewPane({ serviceId, serviceKey, url, partition, visible, onBadgeChange, onSenderChange }: WebviewPaneProps) {
   const webviewRef = useRef<Electron.WebviewTag | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const retryCountRef = useRef(0)
+  const [status, setStatus] = useState<PaneStatus>('loading')
 
   useEffect(() => {
     const webview = webviewRef.current
     if (!webview) return
 
     let mounted = true
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+
+    const stopPolling = () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current)
+        pollRef.current = null
+      }
+    }
 
     const startPolling = () => {
-      if (pollRef.current) clearInterval(pollRef.current)
+      stopPolling()
 
       pollRef.current = setInterval(async () => {
         if (!mounted) return
@@ -222,7 +219,7 @@ function WebviewPane({ serviceId, url, partition, visible, onBadgeChange, onSend
         // Badge via titre de page
         try {
           const title = webview.getTitle()
-          const count = parseBadgeFromTitle(title)
+          const count = parseBadgeFromTitle(title, serviceKey)
           if (mounted) onBadgeChange(serviceId, count)
         } catch { /* webview pas prête */ }
 
@@ -231,16 +228,6 @@ function WebviewPane({ serviceId, url, partition, visible, onBadgeChange, onSend
           const sender = await webview.executeJavaScript(SENDER_EXTRACTOR)
           if (mounted && typeof sender === 'string' && sender.length > 0) {
             onSenderChange(serviceId, sender)
-          }
-        } catch { /* silencieux */ }
-
-        // Liens externes : drainer la queue et ouvrir dans le navigateur système
-        try {
-          const links = await webview.executeJavaScript(LINK_DRAIN)
-          if (mounted && Array.isArray(links)) {
-            for (const url of links) {
-              if (typeof url === 'string') window.unichat.openExternal(url)
-            }
           }
         } catch { /* silencieux */ }
 
@@ -258,14 +245,26 @@ function WebviewPane({ serviceId, url, partition, visible, onBadgeChange, onSend
       }, 4000)
     }
 
+    const scheduleRetry = () => {
+      if (retryCountRef.current >= 3) return
+      retryCountRef.current += 1
+      retryTimer = setTimeout(() => {
+        if (!mounted) return
+        setStatus('loading')
+        try { webview.reload() } catch { /* webview détruite */ }
+      }, 2000 * retryCountRef.current)
+    }
+
     const injectPatchers = () => {
       webview.executeJavaScript(MEDIA_PATCHER).catch(() => {})
-      webview.executeJavaScript(LINK_PATCHER).catch(() => {})
       webview.executeJavaScript(NOTIF_PATCHER).catch(() => {})
     }
 
     const handleDomReady = () => {
       injectPatchers()
+      startPolling()
+      retryCountRef.current = 0
+      if (mounted) setStatus('ready')
     }
 
     const handleDidFinishLoad = () => {
@@ -273,31 +272,124 @@ function WebviewPane({ serviceId, url, partition, visible, onBadgeChange, onSend
       startPolling()
     }
 
+    // Échec de chargement (offline, DNS…) — errorCode -3 = navigation annulée, à ignorer
+    const handleDidFailLoad = (e: Electron.DidFailLoadEvent) => {
+      if (e.errorCode === -3 || !e.isMainFrame) return
+      stopPolling()
+      if (mounted) setStatus('error')
+      scheduleRetry()
+    }
+
+    // Crash du renderer de la webview (mémoire, GPU…) → reload auto avec backoff
+    const handleRenderGone = () => {
+      stopPolling()
+      if (mounted) setStatus('error')
+      scheduleRetry()
+    }
+
+    // Retour du réseau → retenter automatiquement si la pane est en erreur
+    const handleOnline = () => {
+      if (!mounted) return
+      retryCountRef.current = 0
+      setStatus((prev) => {
+        if (prev === 'error') {
+          try { webview.reload() } catch { /* webview détruite */ }
+          return 'loading'
+        }
+        return prev
+      })
+    }
+
     webview.addEventListener('dom-ready', handleDomReady)
     webview.addEventListener('did-finish-load', handleDidFinishLoad)
+    webview.addEventListener('did-fail-load', handleDidFailLoad as unknown as EventListener)
+    webview.addEventListener('render-process-gone', handleRenderGone)
+    window.addEventListener('online', handleOnline)
 
     return () => {
       mounted = false
       webview.removeEventListener('dom-ready', handleDomReady)
       webview.removeEventListener('did-finish-load', handleDidFinishLoad)
-      if (pollRef.current) clearInterval(pollRef.current)
+      webview.removeEventListener('did-fail-load', handleDidFailLoad as unknown as EventListener)
+      webview.removeEventListener('render-process-gone', handleRenderGone)
+      window.removeEventListener('online', handleOnline)
+      if (retryTimer) clearTimeout(retryTimer)
+      stopPolling()
     }
-  }, [serviceId, onBadgeChange, onSenderChange])
+  }, [serviceId, serviceKey, onBadgeChange, onSenderChange])
+
+  const handleManualRetry = () => {
+    retryCountRef.current = 0
+    setStatus('loading')
+    try { webviewRef.current?.reload() } catch { /* webview détruite */ }
+  }
 
   return (
-    <webview
-      ref={webviewRef}
-      src={url}
-      partition={partition}
-      useragent={CHROME_UA}
-      allowpopups={true}
-      style={{
-        position: 'absolute',
-        inset: 0,
-        width: '100%',
-        height: '100%',
-        display: visible ? 'flex' : 'none',
-      }}
-    />
+    <div style={{ position: 'absolute', inset: 0, display: visible ? 'block' : 'none' }}>
+      <webview
+        ref={webviewRef}
+        src={url}
+        partition={partition}
+        useragent={CHROME_UA}
+        allowpopups={true}
+        style={{
+          position: 'absolute',
+          inset: 0,
+          width: '100%',
+          height: '100%',
+          display: 'flex',
+        }}
+      />
+      {status === 'loading' && (
+        <div style={overlayStyle}>
+          <div style={spinnerStyle} />
+          <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)' }}>Chargement…</div>
+        </div>
+      )}
+      {status === 'error' && (
+        <div style={overlayStyle}>
+          <div style={{ fontSize: 32 }}>📡</div>
+          <div style={{ fontSize: 14, fontWeight: 600, color: 'rgba(255,255,255,0.8)' }}>
+            Connexion impossible
+          </div>
+          <button
+            onClick={handleManualRetry}
+            style={{
+              padding: '8px 20px',
+              background: 'rgba(255,255,255,0.1)',
+              border: '1px solid rgba(255,255,255,0.2)',
+              borderRadius: 8,
+              color: '#fff',
+              fontSize: 13,
+              cursor: 'pointer',
+            }}
+          >
+            Réessayer
+          </button>
+        </div>
+      )}
+    </div>
   )
+}
+
+const overlayStyle: React.CSSProperties = {
+  position: 'absolute',
+  inset: 0,
+  background: '#1a1a1a',
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 12,
+  fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
+  zIndex: 10,
+}
+
+const spinnerStyle: React.CSSProperties = {
+  width: 28,
+  height: 28,
+  border: '3px solid rgba(255,255,255,0.1)',
+  borderTopColor: 'rgba(255,255,255,0.6)',
+  borderRadius: '50%',
+  animation: 'unichat-spin 0.8s linear infinite',
 }

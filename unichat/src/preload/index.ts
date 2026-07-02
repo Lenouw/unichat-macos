@@ -20,6 +20,10 @@ contextBridge.exposeInMainWorld('unichat', {
     ipcRenderer.send('accounts:register', { ids, partitions })
   },
 
+  clearSession: (partition: string) => {
+    ipcRenderer.send('session:clear', partition)
+  },
+
   onUpdateStatus: (callback: (event: string, payload?: string) => void) => {
     const handlers: Array<[string, (...args: unknown[]) => void]> = [
       ['update:checking',     () => callback('checking')],

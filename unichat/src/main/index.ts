@@ -1,38 +1,184 @@
-import { app, BrowserWindow, shell, ipcMain, Notification, globalShortcut, session, systemPreferences } from 'electron'
+import { app, BrowserWindow, shell, ipcMain, Notification, session, systemPreferences, screen } from 'electron'
 import { join } from 'path'
+import { readFileSync, writeFileSync } from 'fs'
 import { is } from '@electron-toolkit/utils'
 import { autoUpdater } from 'electron-updater'
+import contextMenu from 'electron-context-menu'
 
 // Forcer un userData stable pour que les sessions persistent entre builds dev et packagé
 app.setPath('userData', join(app.getPath('home'), 'Library', 'Application Support', 'UniChat'))
 
 // Format autorisé pour les IDs de compte : alphanumérique + tirets + underscores, 1-64 chars
 const SAFE_ID_RE = /^[a-zA-Z0-9_-]{1,64}$/
+const SAFE_PARTITION_RE = /^persist:[a-zA-Z0-9_-]{1,128}$/
 
 let mainWindow: BrowserWindow | null = null
 const badges: Record<string, number> = {}
 let registeredAccountIds: string[] = []
 
-const SAFE_PARTITION_RE = /^persist:[a-zA-Z0-9_-]{1,128}$/
+// ─── Origines autorisées ─────────────────────────────────────────────────────
+// Services du catalogue + domaines d'authentification associés.
+// Toute navigation/permission hors de cette liste est refusée dans les webviews.
+const ALLOWED_HOST_SUFFIXES = [
+  // Services
+  'whatsapp.com', 'whatsapp.net',
+  'messenger.com', 'facebook.com', 'fbcdn.net',
+  'teams.microsoft.com', 'microsoft.com', 'microsoftonline.com', 'live.com', 'office.com', 'sharepoint.com',
+  'instagram.com', 'cdninstagram.com',
+  'telegram.org',
+  'slack.com', 'slack-edge.com',
+  'discord.com', 'discordapp.com', 'discord.gg',
+  'linkedin.com', 'licdn.com',
+  // SSO courants
+  'google.com', 'gstatic.com', 'googleusercontent.com',
+  'apple.com',
+]
 
-const allowedPermissions = new Set([
-  'media', 'microphone', 'audioCapture',
-  'camera', 'videoCapture',
-  'notifications', 'clipboard-read',
-])
+// Origines pouvant obtenir micro/caméra (les services d'appels uniquement)
+const MEDIA_HOST_SUFFIXES = [
+  'whatsapp.com', 'messenger.com', 'facebook.com',
+  'teams.microsoft.com', 'telegram.org',
+  'slack.com', 'discord.com', 'instagram.com', 'linkedin.com',
+]
+
+function hostMatches(hostname: string, suffixes: string[]): boolean {
+  return suffixes.some((s) => hostname === s || hostname.endsWith(`.${s}`))
+}
+
+function urlAllowed(url: string, suffixes: string[]): boolean {
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol !== 'https:') return false
+    return hostMatches(parsed.hostname, suffixes)
+  } catch {
+    return false
+  }
+}
+
+// ─── Permissions par origine ─────────────────────────────────────────────────
+const MEDIA_PERMISSIONS = new Set(['media', 'microphone', 'audioCapture', 'camera', 'videoCapture'])
+const GENERAL_PERMISSIONS = new Set(['notifications', 'clipboard-read'])
 const appliedSessions = new WeakSet<Electron.Session>()
+
+function permissionAllowed(permission: string, requestingUrl: string): boolean {
+  if (MEDIA_PERMISSIONS.has(permission)) return urlAllowed(requestingUrl, MEDIA_HOST_SUFFIXES)
+  if (GENERAL_PERMISSIONS.has(permission)) return urlAllowed(requestingUrl, ALLOWED_HOST_SUFFIXES)
+  return false
+}
 
 function applyToSession(ses: Electron.Session): void {
   if (appliedSessions.has(ses)) return
   appliedSessions.add(ses)
-  ses.setPermissionRequestHandler((_wc, permission, callback) => {
-    callback(allowedPermissions.has(permission))
+  ses.setPermissionRequestHandler((wc, permission, callback, details) => {
+    const url = details?.requestingUrl || wc?.getURL() || ''
+    callback(permissionAllowed(permission, url))
   })
-  ses.setPermissionCheckHandler((_wc, permission) => {
-    return allowedPermissions.has(permission)
+  ses.setPermissionCheckHandler((wc, permission, requestingOrigin) => {
+    const url = requestingOrigin || wc?.getURL() || ''
+    return permissionAllowed(permission, url)
+  })
+  // Correcteur orthographique FR + EN dans les webviews
+  try {
+    ses.setSpellCheckerLanguages(['fr', 'en-US'])
+  } catch {
+    /* langue non dispo — non bloquant */
+  }
+}
+
+// ─── Contrôle des webviews (navigation, popups) ──────────────────────────────
+function setupWebviewGovernance(): void {
+  app.on('session-created', applyToSession)
+
+  app.on('web-contents-created', (_event, contents) => {
+    applyToSession(contents.session)
+
+    if (contents.getType() !== 'webview') return
+
+    // Popups : autorisés pour les domaines connus (SSO/OAuth ont besoin d'une
+    // vraie fenêtre enfant avec opener) ; tout autre http(s) → navigateur système
+    contents.setWindowOpenHandler(({ url }) => {
+      if (urlAllowed(url, ALLOWED_HOST_SUFFIXES)) {
+        return {
+          action: 'allow',
+          overrideBrowserWindowOptions: {
+            autoHideMenuBar: true,
+            webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true },
+          },
+        }
+      }
+      try {
+        const parsed = new URL(url)
+        if (parsed.protocol === 'https:' || parsed.protocol === 'http:') shell.openExternal(url)
+      } catch { /* URL invalide */ }
+      return { action: 'deny' }
+    })
+
+    // Navigation : bloquée hors des origines autorisées, ouverte en externe à la place
+    contents.on('will-navigate', (event, url) => {
+      if (urlAllowed(url, ALLOWED_HOST_SUFFIXES)) return
+      event.preventDefault()
+      try {
+        const parsed = new URL(url)
+        if (parsed.protocol === 'https:' || parsed.protocol === 'http:') shell.openExternal(url)
+      } catch { /* URL invalide */ }
+    })
+
+    // Cmd+1-9 doit marcher aussi quand le focus est dans une webview
+    contents.on('before-input-event', (event, input) => {
+      handleAccountShortcut(event, input)
+    })
   })
 }
 
+// ─── Raccourcis Cmd+1-9 (uniquement quand l'app a le focus) ──────────────────
+// before-input-event au lieu de globalShortcut : ne vole plus Cmd+1-9
+// aux autres apps macOS (Safari, Finder, VS Code…) quand UniChat est en fond
+function handleAccountShortcut(event: Electron.Event, input: Electron.Input): void {
+  if (input.type !== 'keyDown') return
+  if (!input.meta || input.alt || input.shift || input.control) return
+  const n = Number(input.key)
+  if (!Number.isInteger(n) || n < 1 || n > 9) return
+  const id = registeredAccountIds[n - 1]
+  if (!id) return
+  event.preventDefault()
+  mainWindow?.webContents.send('service:select', id)
+}
+
+// ─── Persistance taille/position de fenêtre ──────────────────────────────────
+const windowStateFile = join(app.getPath('userData'), 'window-state.json')
+
+interface WindowState { x?: number; y?: number; width: number; height: number }
+
+function loadWindowState(): WindowState {
+  const fallback: WindowState = { width: 1200, height: 800 }
+  try {
+    const raw = JSON.parse(readFileSync(windowStateFile, 'utf8')) as WindowState
+    if (typeof raw.width !== 'number' || typeof raw.height !== 'number') return fallback
+    // Garde-fou : la fenêtre doit être visible sur un écran actuel (écran externe débranché…)
+    if (typeof raw.x === 'number' && typeof raw.y === 'number') {
+      const onScreen = screen.getAllDisplays().some((d) => {
+        const b = d.workArea
+        return raw.x! >= b.x - 100 && raw.y! >= b.y - 100 && raw.x! < b.x + b.width && raw.y! < b.y + b.height
+      })
+      if (!onScreen) {
+        delete raw.x
+        delete raw.y
+      }
+    }
+    return { ...fallback, ...raw }
+  } catch {
+    return fallback
+  }
+}
+
+function saveWindowState(): void {
+  if (!mainWindow) return
+  try {
+    writeFileSync(windowStateFile, JSON.stringify(mainWindow.getBounds()))
+  } catch { /* disque en lecture seule — non bloquant */ }
+}
+
+// ─── Auto-update ─────────────────────────────────────────────────────────────
 function setupAutoUpdater(): void {
   // Pas de check en dev — uniquement en production
   if (is.dev) return
@@ -61,7 +207,8 @@ function setupAutoUpdater(): void {
   })
 
   autoUpdater.on('error', () => {
-    // Silencieux — l'utilisateur n'est pas alerté des erreurs réseau passagères
+    // Sortir la bannière d'un éventuel état "Téléchargement…" bloqué
+    mainWindow?.webContents.send('update:not-available')
   })
 
   // Check au démarrage, puis toutes les 4 heures
@@ -71,22 +218,13 @@ function setupAutoUpdater(): void {
   })
 }
 
-function setupMediaPermissions(): void {
-  applyToSession(session.defaultSession)
-
-  // Partitions connues déjà sur disque (session-created ne fire pas pour celles-ci)
-  const knownPartitions = ['wa-perso', 'wa-pro1', 'wa-pro2', 'messenger', 'teams']
-  knownPartitions.forEach((id) => applyToSession(session.fromPartition(`persist:${id}`)))
-
-  // Nouvelles sessions dynamiques (nouveaux comptes)
-  app.on('session-created', applyToSession)
-
-  // Filet de sécurité : chaque webContents créé garantit que sa session a les handlers
-  app.on('web-contents-created', (_event, contents) => {
-    applyToSession(contents.session)
-  })
+// ─── Badge dock ──────────────────────────────────────────────────────────────
+function refreshDockBadge(): void {
+  const total = Object.values(badges).reduce((sum, n) => sum + n, 0)
+  app.dock?.setBadge(total > 0 ? String(total) : '')
 }
 
+// ─── IPC ─────────────────────────────────────────────────────────────────────
 function setupIPC(): void {
   ipcMain.on('badge:update', (_event, payload: unknown) => {
     if (typeof payload !== 'object' || payload === null) return
@@ -95,19 +233,30 @@ function setupIPC(): void {
     if (typeof count !== 'number' || !Number.isFinite(count) || count < 0) return
 
     badges[serviceId] = Math.floor(count)
-    const total = Object.values(badges).reduce((sum, n) => sum + n, 0)
-    app.dock?.setBadge(total > 0 ? String(total) : '')
+    refreshDockBadge()
   })
 
   ipcMain.on('notification:show', (_event, payload: unknown) => {
     if (typeof payload !== 'object' || payload === null) return
-    const { title, body } = payload as Record<string, unknown>
+    const { serviceId, title, body } = payload as Record<string, unknown>
     if (typeof title !== 'string' || typeof body !== 'string') return
     const safeTitle = title.slice(0, 100)
     const safeBody = body.slice(0, 300)
-    if (Notification.isSupported()) {
-      new Notification({ title: safeTitle, body: safeBody }).show()
+    if (!Notification.isSupported()) return
+
+    const notification = new Notification({ title: safeTitle, body: safeBody })
+    // Clic sur la notif → focus de l'app + sélection du compte source
+    if (typeof serviceId === 'string' && SAFE_ID_RE.test(serviceId)) {
+      notification.on('click', () => {
+        if (mainWindow) {
+          if (mainWindow.isMinimized()) mainWindow.restore()
+          mainWindow.show()
+          mainWindow.focus()
+          mainWindow.webContents.send('service:select', serviceId)
+        }
+      })
     }
+    notification.show()
   })
 
   ipcMain.on('accounts:register', (_event, payload: unknown) => {
@@ -120,19 +269,27 @@ function setupIPC(): void {
     )
     registeredAccountIds = validIds.slice(0, 9)
 
+    // Purger les badges des comptes qui n'existent plus (sinon le total
+    // du dock inclut indéfiniment les non-lus d'un compte supprimé)
+    const validSet = new Set(validIds)
+    Object.keys(badges).forEach((id) => {
+      if (!validSet.has(id)) delete badges[id]
+    })
+    refreshDockBadge()
+
     // Appliquer les permissions aux sessions des comptes dynamiques
     partitions.forEach((part) => {
       if (typeof part === 'string' && SAFE_PARTITION_RE.test(part)) {
         applyToSession(session.fromPartition(part))
       }
     })
+  })
 
-    globalShortcut.unregisterAll()
-    registeredAccountIds.forEach((id, index) => {
-      globalShortcut.register(`CommandOrControl+${index + 1}`, () => {
-        mainWindow?.webContents.send('service:select', id)
-      })
-    })
+  // Suppression de compte : effacer les données de session sur disque
+  // (cookies, session WhatsApp, cache) — sinon elles restent indéfiniment
+  ipcMain.on('session:clear', (_event, partition: unknown) => {
+    if (typeof partition !== 'string' || !SAFE_PARTITION_RE.test(partition)) return
+    session.fromPartition(partition).clearStorageData().catch(() => {})
   })
 
   // L'utilisateur a cliqué "Redémarrer pour installer"
@@ -152,10 +309,15 @@ function setupIPC(): void {
   })
 }
 
+// ─── Fenêtre principale ──────────────────────────────────────────────────────
 function createWindow(): void {
+  const state = loadWindowState()
+
   mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
+    x: state.x,
+    y: state.y,
+    width: state.width,
+    height: state.height,
     minWidth: 800,
     minHeight: 600,
     titleBarStyle: 'hiddenInset',
@@ -163,7 +325,7 @@ function createWindow(): void {
     show: false,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false,
+      sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
       webviewTag: true,
@@ -172,6 +334,23 @@ function createWindow(): void {
 
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show()
+  })
+
+  mainWindow.on('close', saveWindowState)
+
+  // Défense en profondeur : verrouiller les attributs des webviews côté main
+  mainWindow.webContents.on('will-attach-webview', (event, webPreferences, params) => {
+    delete webPreferences.preload
+    webPreferences.nodeIntegration = false
+    webPreferences.contextIsolation = true
+    if (typeof params.src === 'string' && !urlAllowed(params.src, ALLOWED_HOST_SUFFIXES)) {
+      event.preventDefault()
+    }
+  })
+
+  // Cmd+1-9 quand le focus est dans le renderer (sidebar)
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    handleAccountShortcut(event, input)
   })
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -193,8 +372,8 @@ function createWindow(): void {
   }
 }
 
+// ─── Bootstrap ───────────────────────────────────────────────────────────────
 // Empêche deux instances de l'app de tourner simultanément
-// Si une instance est déjà ouverte, on focus sa fenêtre et on quitte la nouvelle
 if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
@@ -204,35 +383,51 @@ if (!app.requestSingleInstanceLock()) {
       mainWindow.focus()
     }
   })
-}
 
-setupAutoUpdater()
-
-app.whenReady().then(async () => {
-  // Demande la permission micro à macOS.
-  // Si macOS retourne false (permission refusée ou jamais demandée), ouvre les Réglages Système
-  // directement sur la page Microphone pour que l'utilisateur puisse l'activer manuellement.
-  if (process.platform === 'darwin') {
-    const granted = await systemPreferences.askForMediaAccess('microphone')
-    if (!granted) {
-      // Ouvre directement la page Microphone dans les Réglages Système macOS
-      shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone')
-    }
-  }
-
-  setupMediaPermissions()
-  setupIPC()
-  createWindow()
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+  // Menu contextuel clic droit (copier/coller, correcteur, images) dans
+  // toutes les webviews — comportement macOS standard
+  contextMenu({
+    showSaveImageAs: true,
+    showCopyImageAddress: false,
+    showSearchWithGoogle: false,
+    showInspectElement: is.dev,
+    labels: {
+      cut: 'Couper',
+      copy: 'Copier',
+      paste: 'Coller',
+      copyLink: 'Copier le lien',
+      copyImage: "Copier l'image",
+      saveImageAs: "Enregistrer l'image sous…",
+      selectAll: 'Tout sélectionner',
+      learnSpelling: 'Mémoriser l’orthographe',
+      lookUpSelection: 'Rechercher « {selection} »',
+    },
   })
-})
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
-})
+  setupAutoUpdater()
 
-app.on('will-quit', () => {
-  globalShortcut.unregisterAll()
-})
+  app.whenReady().then(async () => {
+    // Demande la permission micro à macOS.
+    // Si macOS retourne false (permission refusée ou jamais demandée), ouvre les Réglages Système
+    // directement sur la page Microphone pour que l'utilisateur puisse l'activer manuellement.
+    if (process.platform === 'darwin') {
+      const granted = await systemPreferences.askForMediaAccess('microphone')
+      if (!granted) {
+        shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone')
+      }
+    }
+
+    applyToSession(session.defaultSession)
+    setupWebviewGovernance()
+    setupIPC()
+    createWindow()
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    })
+  })
+
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') app.quit()
+  })
+}

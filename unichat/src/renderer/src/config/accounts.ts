@@ -90,6 +90,9 @@ export function loadAccounts(): Account[] {
     const parsed: unknown = JSON.parse(stored)
     if (!Array.isArray(parsed)) return DEFAULT_ACCOUNTS
 
+    // Tableau vide = l'utilisateur a supprimé tous ses comptes : on respecte ce choix.
+    // Tableau non vide mais 100% invalide = corruption : retour aux défauts.
+    if (parsed.length === 0) return []
     const valid = parsed.filter(isValidAccount)
     return valid.length > 0 ? valid : DEFAULT_ACCOUNTS
   } catch {

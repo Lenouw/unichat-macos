@@ -8,7 +8,7 @@ type UpdateStatus = 'idle' | 'checking' | 'available' | 'progress' | 'ready' | '
 
 export default function App() {
   const [accounts, setAccounts] = useState<Account[]>(loadAccounts)
-  const [activeId, setActiveId] = useState(() => loadAccounts()[0]?.id ?? '')
+  const [activeId, setActiveId] = useState(() => accounts[0]?.id ?? '')
   const [badges, setBadges] = useState<Record<string, number>>({})
   const [lastSenders, setLastSenders] = useState<Record<string, string>>({})
   const [showAddModal, setShowAddModal] = useState(false)
@@ -39,10 +39,11 @@ export default function App() {
   const handleBadgeChange = useCallback((serviceId: string, count: number) => {
     setBadges((prev) => {
       if (prev[serviceId] === count) return prev
-      const next = { ...prev, [serviceId]: count }
-      window.unichat.setBadge(serviceId, count)
-      return next
+      return { ...prev, [serviceId]: count }
     })
+    // IPC hors de l'updater : un updater React doit rester pur
+    // (double-invoqué en StrictMode → double envoi sinon)
+    window.unichat.setBadge(serviceId, count)
   }, [])
 
   const handleSenderChange = useCallback((serviceId: string, sender: string) => {
@@ -68,12 +69,15 @@ export default function App() {
   }
 
   const handleDeleteAccount = (id: string) => {
+    const account = accounts.find((a) => a.id === id)
     const updated = accounts.filter((a) => a.id !== id)
     setAccounts(updated)
     saveAccounts(updated)
     if (activeId === id) {
       setActiveId(updated[0]?.id ?? '')
     }
+    // Effacer la session sur disque (cookies, QR WhatsApp, cache)
+    if (account) window.unichat.clearSession(account.partition)
     // Nettoyer les badges et senders de ce compte
     setBadges((prev) => { const next = { ...prev }; delete next[id]; return next })
     setLastSenders((prev) => { const next = { ...prev }; delete next[id]; return next })
