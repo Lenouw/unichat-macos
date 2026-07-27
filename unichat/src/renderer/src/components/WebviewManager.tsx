@@ -69,6 +69,97 @@ const MEDIA_PATCHER = `
 })();
 `
 
+// Protège les messages vocaux en cours d'enregistrement.
+//
+// Problème : pendant un enregistrement, le champ de saisie garde le focus.
+// Appuyer sur Entrée y envoie un message texte vide, ce qui réinitialise le
+// composeur et détruit l'enregistrement sans jamais l'envoyer.
+//
+// Détection de l'enregistrement : on suit les flux micro ouverts via
+// getUserMedia plutôt que des sélecteurs DOM (que les services changent
+// régulièrement sans prévenir).
+//
+// Garde-fou : si le micro est actif ET le champ de saisie est vide, Entrée est
+// bloquée puis redirigée vers le bouton d'envoi. Si ce bouton reste introuvable,
+// Entrée ne fait simplement rien — l'enregistrement est préservé dans tous les cas.
+// La condition "champ vide" évite de casser l'envoi de texte pendant un appel,
+// où le micro est également actif.
+export const VOICE_GUARD = `
+(function() {
+  if (window.__unichatVoiceGuarded) return;
+  window.__unichatVoiceGuarded = true;
+
+  var micStreams = 0;
+
+  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    var _origGUM = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    navigator.mediaDevices.getUserMedia = function(constraints) {
+      return _origGUM(constraints).then(function(stream) {
+        try {
+          var tracks = stream.getAudioTracks();
+          if (tracks.length > 0) {
+            micStreams++;
+            var remaining = tracks.length;
+            var release = function() {
+              remaining--;
+              if (remaining <= 0) micStreams = Math.max(0, micStreams - 1);
+            };
+            tracks.forEach(function(track) {
+              var done = false;
+              var finish = function() { if (!done) { done = true; release(); } };
+              track.addEventListener('ended', finish);
+              var _origStop = track.stop.bind(track);
+              track.stop = function() { finish(); return _origStop(); };
+            });
+          }
+        } catch(e) {}
+        return stream;
+      });
+    };
+  }
+
+  function composerIsEmpty() {
+    try {
+      var boxes = document.querySelectorAll('[contenteditable="true"]');
+      for (var i = 0; i < boxes.length; i++) {
+        if (boxes[i].offsetParent !== null && (boxes[i].textContent || '').trim().length > 0) {
+          return false;
+        }
+      }
+    } catch(e) {}
+    return true;
+  }
+
+  function findSendButton() {
+    var selectors = [
+      '[data-icon="send"]',
+      '[data-icon="audio-send"]',
+      '[data-icon="ptt-send"]',
+      'button[aria-label="Envoyer"]',
+      'button[aria-label="Send"]'
+    ];
+    for (var i = 0; i < selectors.length; i++) {
+      try {
+        var el = document.querySelector(selectors[i]);
+        if (el && el.offsetParent !== null) return el.closest('button') || el;
+      } catch(e) {}
+    }
+    return null;
+  }
+
+  window.addEventListener('keydown', function(e) {
+    if (e.key !== 'Enter' || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (micStreams === 0 || !composerIsEmpty()) return;
+
+    e.preventDefault();
+    e.stopImmediatePropagation();
+
+    var btn = findSendButton();
+    if (btn) btn.click();
+  }, true);
+})();
+`
+
 // Patche window.Notification pour stocker les notifs dans une queue
 // lisible par le parent via executeJavaScript (postMessage ne traverse pas les webviews Electron)
 const NOTIF_PATCHER = `
@@ -257,6 +348,7 @@ function WebviewPane({ serviceId, serviceKey, url, partition, visible, onBadgeCh
 
     const injectPatchers = () => {
       webview.executeJavaScript(MEDIA_PATCHER).catch(() => {})
+      webview.executeJavaScript(VOICE_GUARD).catch(() => {})
       webview.executeJavaScript(NOTIF_PATCHER).catch(() => {})
     }
 
