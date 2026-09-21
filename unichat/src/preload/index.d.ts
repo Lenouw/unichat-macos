@@ -10,6 +10,8 @@ declare global {
       onServiceSelect: (callback: (id: string) => void) => () => void
       registerAccounts: (ids: string[], partitions: string[]) => void
       clearSession: (partition: string) => void
+      getCacheSize: () => Promise<number>
+      purgeCache: () => Promise<number>
       onUpdateStatus: (callback: (event: string, payload?: string) => void) => () => void
       installUpdate: () => void
       openExternal: (url: string) => void

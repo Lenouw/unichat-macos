@@ -4,6 +4,12 @@ import { readFileSync, writeFileSync } from 'fs'
 import { is } from '@electron-toolkit/utils'
 import { autoUpdater } from 'electron-updater'
 import contextMenu from 'electron-context-menu'
+import { measureCaches, purgeAll, purgeOverLimit, CACHE_LIMIT_BYTES } from './cacheManager'
+
+// Plafond du cache disque par partition. Sans ça, Chromium dimensionne le cache
+// selon l'espace libre et n'en redescend jamais : 9 comptes avaient accumulé 4,1 Go
+// de cache HTTP. Doit être posé avant que l'app soit prête.
+app.commandLine.appendSwitch('disk-cache-size', String(CACHE_LIMIT_BYTES))
 
 // Forcer un userData stable pour que les sessions persistent entre builds dev et packagé
 app.setPath('userData', join(app.getPath('home'), 'Library', 'Application Support', 'UniChat'))
@@ -15,6 +21,8 @@ const SAFE_PARTITION_RE = /^persist:[a-zA-Z0-9_-]{1,128}$/
 let mainWindow: BrowserWindow | null = null
 const badges: Record<string, number> = {}
 let registeredAccountIds: string[] = []
+let registeredPartitions: string[] = []
+let startupPurgeDone = false
 
 // ─── Origines autorisées ─────────────────────────────────────────────────────
 // Services du catalogue + domaines d'authentification associés.
@@ -278,11 +286,28 @@ function setupIPC(): void {
     refreshDockBadge()
 
     // Appliquer les permissions aux sessions des comptes dynamiques
-    partitions.forEach((part) => {
-      if (typeof part === 'string' && SAFE_PARTITION_RE.test(part)) {
-        applyToSession(session.fromPartition(part))
-      }
-    })
+    const validPartitions = partitions.filter((part): part is string =>
+      typeof part === 'string' && SAFE_PARTITION_RE.test(part)
+    )
+    validPartitions.forEach((part) => applyToSession(session.fromPartition(part)))
+    registeredPartitions = validPartitions
+
+    // Purge d'entretien, une seule fois par lancement et avant que les webviews
+    // ne chargent : seules les partitions au-dessus du plafond sont vidées
+    if (!startupPurgeDone && validPartitions.length > 0) {
+      startupPurgeDone = true
+      purgeOverLimit(validPartitions).catch(() => {})
+    }
+  })
+
+  // Taille cumulée du cache HTTP, pour l'affichage dans la barre latérale
+  ipcMain.handle('cache:size', async () => {
+    return measureCaches(registeredPartitions)
+  })
+
+  // Purge manuelle déclenchée depuis l'interface. Retourne les octets libérés.
+  ipcMain.handle('cache:purge', async () => {
+    return purgeAll(registeredPartitions)
   })
 
   // Suppression de compte : effacer les données de session sur disque

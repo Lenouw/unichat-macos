@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { Account } from '../config/accounts'
 import { SERVICE_TYPES } from '../config/serviceTypes'
 import { APP_VERSION } from '../config/version'
+import { formatBytes } from './formatBytes'
 
 type UpdateStatus = 'idle' | 'checking' | 'available' | 'progress' | 'ready' | 'not-available'
 
@@ -139,15 +140,19 @@ export function Sidebar({
         onInstall={onInstallUpdate}
       />
 
-      {/* Version */}
+      {/* Version et cache disque */}
       <div style={{
         padding: '4px 16px 4px',
+        display: 'flex',
+        alignItems: 'baseline',
+        justifyContent: 'space-between',
+        gap: 8,
         fontSize: 10,
-        color: 'rgba(255,255,255,0.15)',
         fontFamily: 'ui-monospace, "SF Mono", monospace',
         letterSpacing: '0.05em',
       }}>
-        v{APP_VERSION}
+        <span style={{ color: 'rgba(255,255,255,0.15)' }}>v{APP_VERSION}</span>
+        <CacheIndicator />
       </div>
 
       {/* Bouton Ajouter un compte */}
@@ -653,5 +658,73 @@ function ServiceRow({
         </div>
       )}
     </div>
+  )
+}
+
+/**
+ * Taille du cache disque, avec purge manuelle au clic.
+ *
+ * Ne vide que le cache HTTP et le bytecode : les sessions, cookies et
+ * service workers ne sont jamais touchés (voir src/main/cacheManager.ts).
+ */
+function CacheIndicator(): React.JSX.Element | null {
+  const [size, setSize] = useState<number | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [hover, setHover] = useState(false)
+
+  useEffect(() => {
+    let mounted = true
+    const refresh = (): void => {
+      window.unichat
+        .getCacheSize()
+        .then((n) => { if (mounted) setSize(n) })
+        .catch(() => { if (mounted) setSize(null) })
+    }
+    refresh()
+    const timer = setInterval(refresh, 60000)
+    return () => { mounted = false; clearInterval(timer) }
+  }, [])
+
+  const handlePurge = async (): Promise<void> => {
+    if (busy) return
+    setBusy(true)
+    try {
+      await window.unichat.purgeCache()
+      const next = await window.unichat.getCacheSize()
+      setSize(next)
+    } catch {
+      /* purge impossible, on laisse la valeur affichée */
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (size === null) return null
+
+  const label = busy ? 'Vidage…' : hover ? 'Vider le cache' : `Cache ${formatBytes(size)}`
+
+  return (
+    <button
+      onClick={handlePurge}
+      disabled={busy}
+      title="Vide le cache disque. Les sessions et connexions sont conservées."
+      aria-label={`Cache de ${formatBytes(size)}. Cliquer pour vider.`}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        WebkitAppRegion: 'no-drag',
+        background: 'none',
+        border: 'none',
+        padding: 0,
+        font: 'inherit',
+        letterSpacing: 'inherit',
+        color: hover && !busy ? 'rgba(255,255,255,0.45)' : 'rgba(255,255,255,0.15)',
+        cursor: busy ? 'default' : 'pointer',
+        transition: 'color 150ms ease',
+        whiteSpace: 'nowrap',
+      } as React.CSSProperties}
+    >
+      {label}
+    </button>
   )
 }

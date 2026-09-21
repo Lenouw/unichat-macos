@@ -24,6 +24,10 @@ contextBridge.exposeInMainWorld('unichat', {
     ipcRenderer.send('session:clear', partition)
   },
 
+  getCacheSize: (): Promise<number> => ipcRenderer.invoke('cache:size'),
+
+  purgeCache: (): Promise<number> => ipcRenderer.invoke('cache:purge'),
+
   onUpdateStatus: (callback: (event: string, payload?: string) => void) => {
     const handlers: Array<[string, (...args: unknown[]) => void]> = [
       ['update:checking',     () => callback('checking')],

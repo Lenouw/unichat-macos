@@ -4,7 +4,18 @@ import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import { Sidebar } from './Sidebar'
 import { Account } from '../config/accounts'
 
-vi.stubGlobal('unichat', { setBadge: vi.fn(), notify: vi.fn(), onServiceSelect: vi.fn(), registerAccounts: vi.fn(), onUpdateStatus: vi.fn(() => () => {}), installUpdate: vi.fn() })
+vi.stubGlobal('unichat', {
+  setBadge: vi.fn(),
+  notify: vi.fn(),
+  onServiceSelect: vi.fn(),
+  registerAccounts: vi.fn(),
+  clearSession: vi.fn(),
+  getCacheSize: vi.fn(() => Promise.resolve(340 * 1024 * 1024)),
+  purgeCache: vi.fn(() => Promise.resolve(340 * 1024 * 1024)),
+  onUpdateStatus: vi.fn(() => () => {}),
+  installUpdate: vi.fn(),
+  openExternal: vi.fn(),
+})
 
 const MOCK_ACCOUNTS: Account[] = [
   { id: 'wa-perso', serviceKey: 'whatsapp', label: 'WhatsApp Perso', color: '#25D366', url: 'https://web.whatsapp.com', partition: 'persist:wa-perso' },
@@ -75,5 +86,54 @@ describe('Sidebar', () => {
     render(<Sidebar {...defaultProps} onAddAccount={onAddAccount} />)
     fireEvent.click(screen.getByText('Ajouter un compte'))
     expect(onAddAccount).toHaveBeenCalledOnce()
+  })
+})
+
+describe('Indicateur de cache', () => {
+  const props = {
+    accounts: MOCK_ACCOUNTS,
+    activeId: 'wa-perso',
+    badges: {},
+    lastSenders: {},
+    onSelect: vi.fn(),
+    onAddAccount: vi.fn(),
+    onDeleteAccount: vi.fn(),
+    onRenameAccount: vi.fn(),
+    onReorder: vi.fn(),
+    updateStatus: 'idle' as const,
+    updateVersion: undefined,
+    updateProgress: 0,
+    onInstallUpdate: vi.fn(),
+  }
+
+  afterEach(() => {
+    cleanup()
+  })
+
+  it('affiche la taille du cache une fois mesurée', async () => {
+    vi.stubGlobal('unichat', {
+      ...window.unichat,
+      getCacheSize: vi.fn(() => Promise.resolve(340 * 1024 * 1024)),
+    })
+
+    render(<Sidebar {...props} />)
+
+    expect(await screen.findByText('Cache 340 Mo')).toBeTruthy()
+  })
+
+  it('déclenche la purge au clic et rafraîchit la valeur affichée', async () => {
+    const purgeCache = vi.fn(() => Promise.resolve(340 * 1024 * 1024))
+    const sizes = [340 * 1024 * 1024, 0]
+    vi.stubGlobal('unichat', {
+      ...window.unichat,
+      purgeCache,
+      getCacheSize: vi.fn(() => Promise.resolve(sizes.shift() ?? 0)),
+    })
+
+    render(<Sidebar {...props} />)
+    fireEvent.click(await screen.findByText('Cache 340 Mo'))
+
+    expect(purgeCache).toHaveBeenCalledTimes(1)
+    expect(await screen.findByText('Cache 0 Mo')).toBeTruthy()
   })
 })
