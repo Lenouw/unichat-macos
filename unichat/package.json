@@ -1,6 +1,6 @@
 {
   "name": "unichat",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "description": "An Electron application with React and TypeScript",
   "main": "./out/main/index.js",
   "author": "example.com",
@@ -18,8 +18,9 @@
     "postinstall": "electron-builder install-app-deps",
     "build:unpack": "npm run build && electron-builder --dir",
     "build:win": "npm run build && electron-builder --win",
-    "build:mac": "electron-vite build && electron-builder --mac",
-    "build:linux": "electron-vite build && electron-builder --linux"
+    "build:mac": "npm run typecheck && npm test && ./scripts/smoke-test.sh && electron-vite build && electron-builder --mac",
+    "build:linux": "electron-vite build && electron-builder --linux",
+    "smoke": "./scripts/smoke-test.sh"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",

@@ -3,7 +3,17 @@ import { join } from 'path'
 import { readFileSync, writeFileSync } from 'fs'
 import { is } from '@electron-toolkit/utils'
 import { autoUpdater } from 'electron-updater'
-import contextMenu from 'electron-context-menu'
+import contextMenuModule from 'electron-context-menu'
+
+// electron-context-menu est un paquet purement ESM, laissé hors du bundle par
+// externalizeDepsPlugin. Le build CommonJS fait donc un require() dessus, et Node
+// renvoie l'objet de module ({ default: fn }) au lieu de la fonction. On accepte
+// les deux formes plutôt que de supposer laquelle arrive.
+const contextMenu = (
+  typeof contextMenuModule === 'function'
+    ? contextMenuModule
+    : (contextMenuModule as unknown as { default: typeof contextMenuModule }).default
+) as typeof contextMenuModule
 import { measureCaches, purgeAll, purgeOverLimit, CACHE_LIMIT_BYTES } from './cacheManager'
 
 // Plafond du cache disque par partition. Sans ça, Chromium dimensionne le cache
@@ -11,8 +21,13 @@ import { measureCaches, purgeAll, purgeOverLimit, CACHE_LIMIT_BYTES } from './ca
 // de cache HTTP. Doit être posé avant que l'app soit prête.
 app.commandLine.appendSwitch('disk-cache-size', String(CACHE_LIMIT_BYTES))
 
-// Forcer un userData stable pour que les sessions persistent entre builds dev et packagé
-app.setPath('userData', join(app.getPath('home'), 'Library', 'Application Support', 'UniChat'))
+// Forcer un userData stable pour que les sessions persistent entre builds dev et packagé.
+// UNICHAT_USER_DATA permet de lancer l'app sur des données jetables pour un test de
+// démarrage, sans toucher aux sessions réelles.
+app.setPath(
+  'userData',
+  process.env.UNICHAT_USER_DATA || join(app.getPath('home'), 'Library', 'Application Support', 'UniChat')
+)
 
 // Format autorisé pour les IDs de compte : alphanumérique + tirets + underscores, 1-64 chars
 const SAFE_ID_RE = /^[a-zA-Z0-9_-]{1,64}$/
