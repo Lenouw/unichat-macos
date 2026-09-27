@@ -68,3 +68,33 @@ données réelles de Florian avait été accepté comme une fatalité au lieu d'
    plutôt que s'en passer.
 4. Pour tout paquet ESM laissé externe par `externalizeDepsPlugin`, accepter les deux
    formes d'import (`typeof x === 'function' ? x : x.default`).
+
+## 2026-09-27 | Connexion Teams impossible : popups bloquées depuis toujours
+
+**Ce qui a mal tourné.** Ajout d'un compte Teams impossible : la validation Authenticator
+passe par une popup, qui ne s'ouvrait jamais. Trois causes empilées.
+
+1. `allowpopups={true}` sur la balise webview : React ignore en silence un booléen sur un
+   attribut qu'il ne connaît pas. L'attribut était absent du DOM dans TOUTES les versions,
+   donc Electron refusait toute fenêtre ouverte par une page, avant même d'appeler
+   `setWindowOpenHandler`. En 1.3.x un script masquait le problème pour les liens ; en
+   supprimant ce script en 1.4.0, les liens externes ont aussi cessé de fonctionner.
+2. La règle de popup exigeait du `https` : la popup `about:blank` de MSAL était refusée.
+3. L'allowlist de navigation bloquait les serveurs d'identité d'entreprise (ADFS, Okta…),
+   impossibles à lister à l'avance.
+
+**Pourquoi ça n'a pas été vu.** Le handler avait été écrit et relu, jamais exercé. Le
+diagnostic n'a abouti qu'en pilotant la vraie webview par le protocole de débogage et en
+lisant le DOM rendu, au lieu de raisonner sur le code source.
+
+**Règles.**
+
+1. Sur un élément que React ne connaît pas (webview, custom elements), passer les
+   attributs en CHAÎNE et vérifier le DOM rendu. Un test couvre désormais `allowpopups`.
+2. Un handler de sécurité se vérifie en le déclenchant, pas en le relisant.
+   `UNICHAT_DEBUG=1` journalise chaque décision de navigation et de popup,
+   `UNICHAT_DRY_EXTERNAL=1` évite d'ouvrir le navigateur pendant les tests, et
+   `--remote-debugging-port` permet de piloter les webviews.
+3. Ne pas filtrer la navigation par liste de domaines dans une app qui héberge des
+   connexions d'entreprise. Protéger ce qui compte (permissions par origine) et laisser
+   passer le https.

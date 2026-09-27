@@ -211,6 +211,9 @@ const NOTIF_DRAIN = `
   return result;
 })()`
 
+// Voir le commentaire sur la balise webview : l'attribut doit arriver en chaîne dans le DOM.
+const WEBVIEW_POPUP_ATTR = { allowpopups: 'true' } as unknown as { allowpopups: boolean }
+
 interface WebviewManagerProps {
   accounts: Account[]
   activeId: string
@@ -423,7 +426,11 @@ function WebviewPane({ serviceId, serviceKey, url, partition, visible, onBadgeCh
         src={url}
         partition={partition}
         useragent={CHROME_UA}
-        allowpopups={true}
+        // Chaîne et non booléen : React ignore en silence un booléen sur un attribut
+        // qu'il ne connaît pas, et la webview perdait allowpopups. Sans lui, Electron
+        // refuse toute fenêtre ouverte par la page (popups de connexion Microsoft,
+        // liens externes) avant même d'appeler setWindowOpenHandler.
+        {...WEBVIEW_POPUP_ATTR}
         style={{
           position: 'absolute',
           inset: 0,

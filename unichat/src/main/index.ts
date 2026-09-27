@@ -15,6 +15,7 @@ const contextMenu = (
     : (contextMenuModule as unknown as { default: typeof contextMenuModule }).default
 ) as typeof contextMenuModule
 import { measureCaches, purgeAll, purgeOverLimit, CACHE_LIMIT_BYTES } from './cacheManager'
+import { classifyPopup } from './popupPolicy'
 
 // Plafond du cache disque par partition. Sans ça, Chromium dimensionne le cache
 // selon l'espace libre et n'en redescend jamais : 9 comptes avaient accumulé 4,1 Go
@@ -108,6 +109,22 @@ function applyToSession(ses: Electron.Session): void {
   }
 }
 
+// UNICHAT_DEBUG=1 journalise chaque décision de navigation et de popup :
+// indispensable pour diagnostiquer un flux de connexion sans deviner.
+const DEBUG = process.env.UNICHAT_DEBUG === '1'
+function debugLog(...args: unknown[]): void {
+  if (DEBUG) console.log('[unichat]', ...args)
+}
+
+// UNICHAT_DRY_EXTERNAL=1 : journalise au lieu d'ouvrir le navigateur (tests sans effet de bord)
+function openInBrowser(url: string): void {
+  if (process.env.UNICHAT_DRY_EXTERNAL === '1') {
+    debugLog('ouverture navigateur (simulée)', url)
+    return
+  }
+  shell.openExternal(url)
+}
+
 // ─── Contrôle des webviews (navigation, popups) ──────────────────────────────
 function setupWebviewGovernance(): void {
   app.on('session-created', applyToSession)
@@ -117,33 +134,60 @@ function setupWebviewGovernance(): void {
 
     if (contents.getType() !== 'webview') return
 
-    // Popups : autorisés pour les domaines connus (SSO/OAuth ont besoin d'une
-    // vraie fenêtre enfant avec opener) ; tout autre http(s) → navigateur système
-    contents.setWindowOpenHandler(({ url }) => {
-      if (urlAllowed(url, ALLOWED_HOST_SUFFIXES)) {
+    // Popups. Deux cas à distinguer par la disposition que fournit Chromium :
+    // - 'new-window' : fenêtre ouverte par script avec des dimensions, c'est la
+    //   forme des popups de connexion (MSAL, SSO d'entreprise, Authenticator).
+    //   Elle s'ouvre dans l'app, avec la session du compte, et peut aller vers
+    //   n'importe quel fournisseur d'identité : ceux des entreprises (ADFS, Okta…)
+    //   sont imprévisibles. about:blank en fait partie, MSAL ouvre la popup vide
+    //   puis y injecte l'adresse.
+    // - liens (target=_blank) : navigateur système, comme avant.
+    // Les permissions micro/caméra restent filtrées par origine, indépendamment.
+    contents.setWindowOpenHandler(({ url, disposition }) => {
+      const authPopup = classifyPopup(url, disposition) === 'app'
+      debugLog('popup demandée', disposition, url, authPopup ? 'DANS L’APP' : 'NAVIGATEUR')
+      if (authPopup) {
         return {
           action: 'allow',
           overrideBrowserWindowOptions: {
+            width: 520,
+            height: 680,
             autoHideMenuBar: true,
-            webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true },
+            webPreferences: {
+              // Même partition que le compte : le jeton obtenu dans la popup doit
+              // atterrir dans la session de la webview qui l'a demandé
+              session: contents.session,
+              nodeIntegration: false,
+              contextIsolation: true,
+              sandbox: true,
+            },
           },
         }
       }
       try {
         const parsed = new URL(url)
-        if (parsed.protocol === 'https:' || parsed.protocol === 'http:') shell.openExternal(url)
+        if (parsed.protocol === 'https:' || parsed.protocol === 'http:') openInBrowser(url)
       } catch { /* URL invalide */ }
       return { action: 'deny' }
     })
 
-    // Navigation : bloquée hors des origines autorisées, ouverte en externe à la place
+    // Navigation dans la webview : tout https est permis, parce que les connexions
+    // d'entreprise redirigent vers des serveurs d'identité impossibles à lister
+    // (incident 2026-09-27 : ajout d'un compte Teams impossible). Les permissions
+    // sensibles ne dépendent pas de ce filtre, elles sont accordées par origine.
+    // Seuls les schémas non https sont bloqués.
     contents.on('will-navigate', (event, url) => {
-      if (urlAllowed(url, ALLOWED_HOST_SUFFIXES)) return
+      const ok = url.startsWith('https://')
+      debugLog('navigation', url, ok ? 'ok' : 'BLOQUÉE')
+      if (ok) return
       event.preventDefault()
-      try {
-        const parsed = new URL(url)
-        if (parsed.protocol === 'https:' || parsed.protocol === 'http:') shell.openExternal(url)
-      } catch { /* URL invalide */ }
+      if (url.startsWith('http://')) openInBrowser(url)
+    })
+
+    contents.on('did-redirect-navigation', (_e, url) => debugLog('redirection', url))
+    contents.on('did-navigate', (_e, url) => debugLog('arrivée', url))
+    contents.on('did-create-window', (win) => {
+      debugLog('fenêtre popup créée', win.webContents.getURL(), 'même session que le compte :', win.webContents.session === contents.session)
     })
 
     // Cmd+1-9 doit marcher aussi quand le focus est dans une webview
