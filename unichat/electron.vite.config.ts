@@ -11,7 +11,16 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()]
   },
   preload: {
-    plugins: [externalizeDepsPlugin()]
+    plugins: [externalizeDepsPlugin()],
+    build: {
+      rollupOptions: {
+        input: {
+          index: resolve(__dirname, 'src/preload/index.ts'),
+          // Préchargé dans les sessions des comptes (registerPreloadScript)
+          webview: resolve(__dirname, 'src/preload/webview.ts'),
+        }
+      }
+    }
   },
   renderer: {
     plugins: [react(), tailwindcss()],

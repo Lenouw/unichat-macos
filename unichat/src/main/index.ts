@@ -93,6 +93,11 @@ function permissionAllowed(permission: string, requestingUrl: string): boolean {
 function applyToSession(ses: Electron.Session): void {
   if (appliedSessions.has(ses)) return
   appliedSessions.add(ses)
+  // Pages des comptes : WebAuthn désactivé avant tout script (voir preload/webauthnGuard.ts).
+  // La session par défaut porte l'interface d'UniChat, pas un compte.
+  if (ses !== session.defaultSession) {
+    ses.registerPreloadScript({ type: 'frame', filePath: join(__dirname, '../preload/webview.js') })
+  }
   ses.setPermissionRequestHandler((wc, permission, callback, details) => {
     const url = details?.requestingUrl || wc?.getURL() || ''
     callback(permissionAllowed(permission, url))
